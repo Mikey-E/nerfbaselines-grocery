@@ -1,3 +1,27 @@
+---- BEGIN fork preamble ----
+
+This is a fork for benchmarking the grocery dataset.
+The original readme text at the time of the fork is after the fork preamble.
+
+Table of models setup (reproducibility)
+
+| model                   | conda setup? | docker setup? | results   | Notes |
+|----------|----------|----------|----------|----------|
+| instant-ngp             |      ✅      |      ✅       | close     | conda: numpy 1.25 |
+| nerfstudio (nerfacto)   |      ❌      |      ✅       | not close | conda: backend forces bad numpy, can't find how to make it stop |
+| gaussian-opacity-fields |      ❌      |      ❌       |           | numpy error |
+| gaussian-splatting      |      ❌      |      ❌       |           | numpy error |
+| mip-splatting           |      ❌      |      ❌       |           | numpy error |
+| mipnerf360              |      ❌      |      ❌       |           | numpy error |
+| zipnerf                 |      ❌      |      ❌       |           | conda: ptxas error (11.8), docker: numpy error |
+| nerf                    |      ❌      |      ❌       |           | numpy error |
+| tetra-nerf              |      ❌      |      ✅       | close     | uses nerfstudio environment |
+| kplanes                 |      ✅      |      ❌       | close     | docker: numpy error |
+| tensorf                 |      ✅      |      ❌       | close     | docker: numpy error |
+| nerfw                   |      ❌      |      ❌       |           | numpy error |
+
+---- END fork preamble ----
+
 <img width=112 height=112 align="left" src="assets/logo.png" />
 <h1>
     <div>NerfBaselines</div>
