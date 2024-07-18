@@ -6,7 +6,7 @@ The original readme text at the time of the fork is after the fork preamble.
 Table of models setup (reproducibility). Results are (theirs, ours). Some of our results are averaged from multiple runs.
 
 | model                   | conda setup? | docker setup? | dataset | PSNR | SSIM | LPIPS (VGG) | Notes |
-|----------|----------|----------|----------|----------|
+|----------|----------|----------|----------|----------|----------|----------|----------|
 | instant-ngp             |      ✅      |      ✅       | kitchen | 29.02, 29.03 | 0.844, 0.853 | 0.255, 0.234 | conda: numpy 1.25 |
 | nerfstudio (nerfacto)   |      ❌      |      ✅       | bicycle | 23.58, 19.00 | 0.567, 0.550 | 0.456, 0.670 | conda: backend forces bad numpy, can't find how to make it stop |
 | gaussian-opacity-fields |      ❌      |      ❌       | | | | | numpy error |
