@@ -3,21 +3,21 @@
 This is a fork for benchmarking the grocery dataset.
 The original readme text at the time of the fork is after the fork preamble.
 
-Table of models setup (reproducibility)
+Table of models setup (reproducibility). Results are (theirs, ours). Some of our results are averaged from multiple runs.
 
-| model                   | conda setup? | docker setup? | results   | Notes |
+| model                   | conda setup? | docker setup? | dataset | PSNR | SSIM | LPIPS (VGG) | Notes |
 |----------|----------|----------|----------|----------|
-| instant-ngp             |      ✅      |      ✅       | close     | conda: numpy 1.25 |
-| nerfstudio (nerfacto)   |      ❌      |      ✅       | not close | conda: backend forces bad numpy, can't find how to make it stop |
-| gaussian-opacity-fields |      ❌      |      ❌       |           | numpy error |
-| gaussian-splatting      |      ❌      |      ❌       |           | numpy error |
-| mip-splatting           |      ❌      |      ❌       |           | numpy error |
-| mipnerf360              |      ❌      |      ❌       |           | numpy error |
-| zipnerf                 |      ❌      |      ❌       |           | conda: ptxas error (11.8), docker: numpy error |
-| nerf                    |      ❌      |      ❌       |           | numpy error |
-| tetra-nerf              |      ❌      |      ✅       | close     | uses nerfstudio environment |
-| kplanes                 |      ✅      |      ❌       | close     | docker: numpy error |
-| tensorf                 |      ✅      |      ❌       | close     | docker: numpy error |
+| instant-ngp             |      ✅      |      ✅       | kitchen | 29.02, 29.03 | 0.844, 0.853 | 0.255, 0.234 | conda: numpy 1.25 |
+| nerfstudio (nerfacto)   |      ❌      |      ✅       | bicycle | 23.58, 19.00 | 0.567, 0.550 | 0.456, 0.670 | conda: backend forces bad numpy, can't find how to make it stop |
+| gaussian-opacity-fields |      ❌      |      ❌       | | | | | numpy error |
+| gaussian-splatting      |      ❌      |      ❌       | | | | | numpy error |
+| mip-splatting           |      ❌      |      ❌       | | | | | numpy error |
+| mipnerf360              |      ❌      |      ❌       | | | | | numpy error |
+| zipnerf                 |      ❌      |      ❌       | | | | | conda: ptxas error (11.8), docker: numpy error |
+| nerf                    |      ❌      |      ❌       | | | | | numpy error |
+| tetra-nerf              |      ❌      |      ✅       | lego | 33.93, 34.03 | 0.972, 0.972 | 0.036, 0.035 |  uses nerfstudio environment |
+| kplanes                 |      ✅      |      ❌       | lego | 35.73, 35.63 | 0.981, 0.981 | 0.047, 0.048 | docker: numpy error |
+| tensorf                 |      ✅      |      ❌       | lego | 36.49, 36.50 | 0.983, 0.983 | 0.022, 0.022 | docker: numpy error |
 | nerfw                   |      ❌      |      ❌       |           | numpy error |
 
 ---- END fork preamble ----
