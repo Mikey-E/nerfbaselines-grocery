@@ -11,14 +11,14 @@ Table of models setup (reproducibility). Results are (theirs, ours). Some of our
 | nerfstudio (nerfacto)   |      ❌      |      ✅       | bicycle | 23.58, 19.00 | 0.567, 0.550 | 0.456, 0.670 | conda: backend forces bad numpy, can't find how to make it stop |
 | gaussian-opacity-fields |      ❌      |      ❌       | | | | | numpy error |
 | gaussian-splatting      |      ❌      |      ❌       | | | | | numpy error |
-| mip-splatting           |      ❌      |      ❌       | | | | | numpy error |
+| mip-splatting           |      ✅      |      ❌       | lego | 35.45, 35.46 | 0.982, 0.982 | 0.021, 0.021 | |
 | mipnerf360              |      ❌      |      ❌       | | | | | numpy error |
 | zipnerf                 |      ❌      |      ❌       | | | | | conda: ptxas error (11.8), docker: numpy error |
 | nerf                    |      ❌      |      ❌       | | | | | numpy error |
 | tetra-nerf              |      ❌      |      ✅       | lego | 33.93, 34.03 | 0.972, 0.972 | 0.036, 0.035 |  uses nerfstudio environment |
 | kplanes                 |      ✅      |      ❌       | lego | 35.73, 35.63 | 0.981, 0.981 | 0.047, 0.048 | docker: numpy error |
 | tensorf                 |      ✅      |      ❌       | lego | 36.49, 36.50 | 0.983, 0.983 | 0.022, 0.022 | docker: numpy error |
-| nerfw                   |      ❌      |      ❌       |           | numpy error |
+| nerfw                   |      ❌      |      ❌       | | | | | numpy error |
 
 ---- END fork preamble ----
 
