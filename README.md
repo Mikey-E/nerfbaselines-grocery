@@ -20,6 +20,9 @@ Table of models setup (reproducibility). Results are (theirs, ours). Some of our
 | tensorf                 |      ✅      |      ❌       | lego | 36.49, 36.50 | 0.983, 0.983 | 0.022, 0.022 | docker: numpy error |
 | nerfw                   |      ❌      |      ❌       | | | | | numpy error |
 
+Recommended: create a soft-link called "datasets", at the highest directory level,
+to point to wherever you will keep the nerfbaselines datasets.
+
 ---- END fork preamble ----
 
 <img width=112 height=112 align="left" src="assets/logo.png" />
