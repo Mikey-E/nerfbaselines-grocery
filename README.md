@@ -20,8 +20,12 @@ Table of models setup (reproducibility). Results are (theirs, ours). Some of our
 | tensorf                 |      ✅      |      ❌       | lego | 36.49, 36.50 | 0.983, 0.983 | 0.022, 0.022 | docker: numpy error |
 | nerfw                   |      ❌      |      ❌       | | | | | numpy error |
 
-Recommended: create a soft-link called "datasets", at the highest directory level,
+Recommended:
+- Create a soft-link called "datasets", at the highest directory level,
 to point to wherever you will keep the nerfbaselines datasets.
+- Create a results directory for keeping info about training runs.
+- With that being done, you'll be able to stay organized with training run commands in similar form to:
+nerfbaselines train --method instant-ngp --data datasets/mipnerf360/kitchen --output results/ingp_kitchen
 
 ---- END fork preamble ----
 
