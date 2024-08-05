@@ -1,34 +1,37 @@
+import re
 import json
 import warnings
 import os
-from typing import Optional, Iterable, Sequence
-from pathlib import Path
 import io
+from typing import Optional, Iterable, Sequence, TYPE_CHECKING
+from pathlib import Path
 import base64
-import numpy as np
 import functools
 import gc
+import numpy as np
 from nerfbaselines.types import Method, MethodInfo, ModelInfo, Dataset, OptimizeEmbeddingsOutput
 from nerfbaselines.types import Cameras, camera_model_to_int
 
 try:
     # We need to import torch before jax to load correct CUDA libraries
-    import torch
+    import torch as __torch  # type: ignore
+    if TYPE_CHECKING:
+        _ = __torch
 except ImportError:
-    torch = None
-import gin
-import jax
-from jax import random
-import jax.numpy as jnp
-import flax
-from flax.training import checkpoints
-from internal.datasets import Dataset as MNDataset
-from internal import camera_utils
-from internal import configs
-from internal import models
-from internal import train_utils  # pylint: disable=unused-import
-from internal import utils
-from internal import raw_utils
+    pass
+import gin  # type: ignore
+import jax  # type: ignore
+from jax import random  # type: ignore
+import jax.numpy as jnp  # type: ignore
+import flax  # type: ignore
+from flax.training import checkpoints  # type: ignore
+from internal.datasets import Dataset as MNDataset  # type: ignore
+from internal import camera_utils  # type: ignore
+from internal import configs  # type: ignore
+from internal import models  # type: ignore
+from internal import train_utils  # type: ignore
+from internal import utils  # type: ignore
+from internal import raw_utils  # type: ignore
 
 
 def numpy_to_base64(array: np.ndarray) -> str:
@@ -57,6 +60,7 @@ def patch_multinerf_with_multicam():
     """Add support to variable image sizes and camera intrinsics at runtime"""
 
     def pixels_to_rays(pix_x_int, pix_y_int, pixtocams, camtoworlds, *, distortion_params, pixtocam_ndc=None, camtype, xnp=np):
+        assert pixtocam_ndc is not None, "pixtocam_ndc must be provided."
         # Must add half pixel offset to shoot rays through pixel centers.
         def pix_to_dir(x, y):
             return xnp.stack([x + .5, y + .5, xnp.ones_like(x)], axis=-1)
@@ -158,7 +162,7 @@ def patch_multinerf_with_multicam():
             batch_index(pixtocams),
             batch_index(camtoworlds),
             distortion_params=distortion_params[cam_idx],
-            pixtocam_ndc=pixtocam_ndc[cam_idx] if pixtocam_ndc is not None else None,
+            pixtocam_ndc=pixtocam_ndc,
             camtype=camtype[cam_idx],
             xnp=xnp)
         # Create Rays data structure.
@@ -174,6 +178,8 @@ def patch_multinerf_with_multicam():
             cam_idx=pixels.cam_idx,
             exposure_idx=pixels.exposure_idx,
             exposure_values=pixels.exposure_values,
+            x_coord=pixels.pix_x_int,
+            y_coord=pixels.pix_y_int,
         )
 
     # Patch functions
@@ -187,6 +193,7 @@ patch_multinerf_with_multicam()
 
 def gin_config_to_dict(config_str: str):
     cfg = {}
+    float_re = r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?"
     def format_value(v):
         if v in {"True", "False"}:
             return v == "True"  # bool
@@ -202,9 +209,11 @@ def gin_config_to_dict(config_str: str):
             return v
         if v == "None":
             return None
-        if "." in v or "e" in v:
+        if re.match(float_re, v):
             return float(v)  # float
-        return int(v)  # int
+        elif v.isdigit() or (v[0] in "+-" and v[1:].isdigit()):
+            return int(v)  # int
+        return str(v)  # int
 
     lines = config_str.splitlines()
     i = 0
@@ -233,11 +242,12 @@ def gin_config_to_dict(config_str: str):
 
 
 class NBDataset(MNDataset):
-    def __init__(self, dataset, config, eval=False, dataparser_transform=None):
+    def __init__(self, dataset, config, eval=False, dataparser_transform=None, pixtocam_ndc=None):
         self.dataset: Dataset = dataset
         self._config = config
         self._eval = eval
         self._dataparser_transform = dataparser_transform
+        self._pixtocam_ndc = pixtocam_ndc
         super().__init__("train" if not eval else "test", None, config)
 
     def __setattr__(self, name, value):
@@ -288,6 +298,7 @@ class NBDataset(MNDataset):
             camera_model_to_int("opencv_fisheye"): 2,
         }
         self.camtype = np.array([camtype_map[i] for i in cameras.camera_types], np.int32)
+        self.images_files = self.dataset["image_paths"]
         dataset_len = len(self.dataset["image_paths"])
         distortion_params = np.zeros((dataset_len, 6), dtype=np.float32)
         dist_shape = min(cameras.distortion_parameters.shape[1], 6)
@@ -310,6 +321,14 @@ class NBDataset(MNDataset):
         # Convert from Opencv to OpenGL coordinate system
         poses[..., 0:3, 1:3] *= -1
 
+        if config.forward_facing:
+            # Set the projective matrix defining the NDC transformation.
+            if self._pixtocam_ndc is not None:
+                self.pixtocam_ndc = self._pixtocam_ndc
+            else:
+                pixtocam_idx = min(enumerate(self.dataset["image_paths"]), key=lambda x: len(x[1]))[0]
+                self.pixtocam_ndc = self.pixtocams.reshape(-1, 3, 3)[pixtocam_idx]
+
         if self._dataparser_transform is not None:
             transform = self._dataparser_transform
             scale = np.linalg.norm(transform[:3, :3], ord=2, axis=-2)
@@ -317,6 +336,17 @@ class NBDataset(MNDataset):
             poses[..., :3, :3] = np.diag(1 / scale) @ poses[..., :3, :3]
         elif config.dataset_loader == "blender":
             transform = np.eye(4)
+            self._dataparser_transform = transform
+        elif config.forward_facing:
+            # Rescale according to a default bd factor.
+            bounds_min = 0.01
+            if self.dataset["cameras"].nears_fars is not None:
+                bounds_min = self.dataset["cameras"].nears_fars[:, 0].min()
+            scale = 1. / (bounds_min * .75)
+            poses[:, :3, 3] *= scale
+            # Recenter poses.
+            poses, transform = camera_utils.recenter_poses(poses)
+            transform = transform @ np.diag([scale] * 3 + [1])
             self._dataparser_transform = transform
         else:
             # test_poses = poses.copy()
@@ -388,8 +418,8 @@ class NBDataset(MNDataset):
             self.near, self.far = backup
 
 
-class MultiNeRF(Method):
-    _method_name: str = "multinerf"
+class SeaThruNeRF(Method):
+    _method_name: str = "seathru-nerf"
 
     def __init__(self, *,
                  checkpoint=None, 
@@ -406,42 +436,54 @@ class MultiNeRF(Method):
         self.step = 0
         self.state = None
         self.cameras = None
-        self.loss_threshold = None
         self.dataset = None
         self.config = None
         self.model = None
         self._config_str = None
         self._dataparser_transform = None
+        self._pixtocam_ndc = None
         if checkpoint is not None:
             if os.path.exists(os.path.join(checkpoint, "dataparser_transform.json")):
                 with open(os.path.join(checkpoint, "dataparser_transform.json"), "r") as f:
                     meta = json.load(f)
                     self._dataparser_transform = numpy_from_base64(meta["colmap_to_world_transform_base64"])
-            elif os.path.exists(os.path.join(checkpoint, "dataparser_transform.txt")):
-                warnings.warn("Using deprecated text format for dataparser_transform. Please upgrade the checkpoint.")
-                with open(os.path.join(checkpoint, "dataparser_transform.txt"), "r") as f:
-                    self._dataparser_transform = np.loadtxt(f)
+                    if meta.get("pixtocam_ndc_base64") is not None:
+                        self._pixtocam_ndc = numpy_from_base64(meta["pixtocam_ndc_base64"])
             else:
-                raise ValueError("Could not find dataparser_transform.{txt,json} in the checkpoint.")
-            self.step = self._loaded_step = int(next(iter((x for x in os.listdir(checkpoint) if x.startswith("checkpoint_")))).split("_")[1])
+                raise ValueError("Could not find dataparser_transform.json in the checkpoint.")
+            self.step = self._loaded_step = max((int(x.split("_")[1]) for x in os.listdir(checkpoint) if x.startswith("checkpoint_")), default=None)
+            if self._loaded_step is None:
+                raise ValueError("Could not find any checkpoints in the directory.")
             self._config_str = (Path(checkpoint) / "config.gin").read_text()
             self.config = self._load_config()
         else:
             self.config = self._load_config(config_overrides=config_overrides)
 
         if train_dataset is not None:
+            self._validate_config(train_dataset)
             self._setup_train(train_dataset)
         else:
             self._setup_eval()
 
+    def _validate_config(self, train_dataset):
+        config_llff = self.config.forward_facing
+        if train_dataset["metadata"].get("type") is not None:
+            dataset_llff = train_dataset["metadata"].get("type") == "forward-facing"
+            if dataset_llff != config_llff:
+                warnings.warn(
+                    f"Invalid configuration for dataset. The dataset type is {train_dataset['metadata'].get('type')}, but the config forward-facing mode is {'on' if config_llff else 'off'}. "
+                    "Performance will be affected. "
+                    f"To resolve the issue, add `--set forward_facing={dataset_llff}` to the list of arguments to override the current value."
+                )
+
     def _load_config(self, config_overrides=None):
         if self.checkpoint is None:
             # Find the config files root
-            import train
+            import render  # type: ignore
 
-            configs_path = str(Path(train.__file__).absolute().parent / "configs")
+            configs_path = str(Path(render.__file__).absolute().parent / "configs")
             config_overrides = (config_overrides or {}).copy()
-            config_path = config_overrides.pop("base_config", None) or "360.gin"
+            config_path = config_overrides.pop("base_config", None) or "llff_256_uw.gin"
             config_path = os.path.join(configs_path, config_path)
             gin.unlock_config()
             gin.config.clear_config(clear_constants=True)
@@ -466,7 +508,14 @@ class MultiNeRF(Method):
             name=cls._method_name,
             required_features=frozenset(("color",)),
             supported_camera_models=frozenset(("pinhole", "opencv", "opencv_fisheye")),
-            supported_outputs=("color", "depth", "accumulation",),
+            supported_outputs=(
+                "color", 
+                "depth", 
+                "accumulation",
+                { "name": "depth_mean", "type": "depth" },
+                { "name": "color_clean", "type": "color" },
+                { "name": "color_backscatter", "type": "color" },
+            ),
         )
 
     def get_info(self):
@@ -482,6 +531,7 @@ class MultiNeRF(Method):
         rng = random.PRNGKey(20200823)
         np.random.seed(20201473 + jax.process_index())
         rng, key = random.split(rng)
+        del key
 
         dummy_rays = utils.dummy_rays(include_exposure_idx=self.config.rawnerf_mode, include_exposure_values=True)
         self.model, variables = models.construct_model(rng, dummy_rays, self.config)
@@ -493,7 +543,6 @@ class MultiNeRF(Method):
             state = checkpoints.restore_checkpoint(self.checkpoint, state)
         # Resume training at the step of the last checkpoint.
         state = flax.jax_utils.replicate(state)
-        self.loss_threshold = 1.0
 
         # Prefetch_buffer_size = 3 x batch_size.
         rng = rng + jax.process_index()  # Make random seed separate across hosts.
@@ -509,8 +558,11 @@ class MultiNeRF(Method):
         if self.config.batch_size % jax.device_count() != 0:
             raise ValueError("Batch size must be divisible by the number of devices.")
 
-        dataset = NBDataset(train_dataset, self.config, eval=False, dataparser_transform=self._dataparser_transform)
+        dataset = NBDataset(train_dataset, self.config, eval=False, 
+                            dataparser_transform=self._dataparser_transform,
+                            pixtocam_ndc=self._pixtocam_ndc)
         self._dataparser_transform = dataset.dataparser_transform
+        self._pixtocam_ndc = dataset.pixtocam_ndc
         assert self._dataparser_transform is not None
 
         # Fail on CI if no GPU is available to avoid expensive CPU training.
@@ -537,7 +589,6 @@ class MultiNeRF(Method):
             state = checkpoints.restore_checkpoint(self.checkpoint, state)
         # Resume training at the step of the last checkpoint.
         state = flax.jax_utils.replicate(state)
-        self.loss_threshold = 1.0
 
         # Prefetch_buffer_size = 3 x batch_size.
         pdataset = flax.jax_utils.prefetch_to_device(dataset, 3)
@@ -560,6 +611,13 @@ class MultiNeRF(Method):
         batch = next(self.pdataset_iter)
 
         learning_rate = self.lr_fn(step)
+        if step >= self.config.uw_decay_acc:
+            sig_mult = self.config.uw_final_acc_trans_loss_mult
+            bs_mult = self.config.uw_final_acc_weights_loss_mult
+
+        else:
+            sig_mult = self.config.uw_initial_acc_trans_loss_mult
+            bs_mult = self.config.uw_initial_acc_weights_loss_mult
 
         self.state, stats, self.rngs = self.train_pstep(
             self.rngs,
@@ -567,10 +625,9 @@ class MultiNeRF(Method):
             batch,
             self.cameras,
             self.train_frac,
-            self.loss_threshold,
+            bs_mult,
+            sig_mult
         )
-        if self.config.enable_robustnerf_loss:
-            self.loss_threshold = jnp.mean(stats["loss_threshold"])
 
         if self.step % self.config.gc_every == 0:
             gc.collect()  # Disable automatic garbage collection for efficiency.
@@ -592,14 +649,9 @@ class MultiNeRF(Method):
             "loss": float(fstats["loss"]),
             "learning_rate": float(fstats["learning_rate"]),
         }
-        if "losses/distortion" in fstats:
-            out["loss_distortion"] = float(fstats["losses/distortion"])
-        if "losses/interlevel" in fstats:
-            out["loss_interlevel"] = float(fstats["losses/interlevel"])
-        if "losses/data" in fstats:
-            out["loss_data"] = float(fstats["losses/data"])
-        if self.config.enable_robustnerf_loss:
-            out["loss_threshold"] = float(fstats["loss_threshold"])
+        for k, v in fstats.items():
+            if k.startswith("losses/"):
+                out["loss_" + k.split("/", 1)[1]] = float(v)
         return out
 
     def save(self, path: str):
@@ -614,6 +666,8 @@ class MultiNeRF(Method):
                         {
                             "colmap_to_world_transform": self._dataparser_transform.tolist(),
                             "colmap_to_world_transform_base64": numpy_to_base64(self._dataparser_transform),
+                            "pixtocam_ndc": self._pixtocam_ndc.tolist() if self._pixtocam_ndc is not None else None,
+                            "pixtocam_ndc_base64": numpy_to_base64(self._pixtocam_ndc) if self._pixtocam_ndc is not None else None,
                         }
                     )
                 )
@@ -628,7 +682,6 @@ class MultiNeRF(Method):
         # We reuse the same random number generator from the optimization step
         # here on purpose so that the visualization matches what happened in
         # training.
-        xnp = jnp
         sizes = cameras.image_sizes
         poses = cameras.poses
         eval_variables = flax.jax_utils.unreplicate(self.state).params
@@ -643,35 +696,21 @@ class MultiNeRF(Method):
             self.config,
             eval=True,
             dataparser_transform=self._dataparser_transform,
+            pixtocam_ndc=self._pixtocam_ndc,
         )
 
-        for i, test_case in enumerate(test_dataset):
-            rendering = models.render_image(functools.partial(self.render_eval_pfn, eval_variables, self.train_frac), test_case.rays, self.rngs[0], self.config, verbose=False)
-
-            # TODO: handle rawnerf color space
-            # if config.rawnerf_mode:
-            #     postprocess_fn = test_dataset["metadata"]['postprocess_fn']
-            # else:
-            accumulation = rendering["acc"]
-            eps = np.finfo(accumulation.dtype).eps
-            color = rendering["rgb"]
-            if not self.model.opaque_background:
-                color = xnp.concatenate(
-                    (
-                        # Unmultiply alpha.
-                        xnp.where(accumulation[..., None] > eps, xnp.divide(color, xnp.clip(accumulation[..., None], eps, None)), xnp.zeros_like(rendering["rgb"])),
-                        accumulation[..., None],
-                    ),
-                    -1,
-                )
-            depth = np.array(rendering["distance_mean"], dtype=np.float32)
-            assert len(accumulation.shape) == 2
-            assert len(depth.shape) == 2
-            yield {
-                "color": np.array(color, dtype=np.float32),
-                "depth": np.array(depth, dtype=np.float32),
-                "accumulation": np.array(accumulation, dtype=np.float32),
+        for test_case in test_dataset:
+            rendering = models.render_image(
+                functools.partial(self.render_eval_pfn, eval_variables, self.train_frac), test_case.rays, self.rngs[0], self.config, verbose=False)
+            out = {
+                "color": np.array(rendering["rgb"], dtype=np.float32),
+                "accumulation": np.array(rendering["acc"], dtype=np.float32),
+                "depth": np.array(rendering["distance_median"], dtype=np.float32),
+                "depth_mean": np.array(rendering["distance_mean"], dtype=np.float32),
+                "color_clean": np.array(rendering["direct"], dtype=np.float32),
+                "color_backscatter": np.array(rendering["bs"], dtype=np.float32),
             }
+            yield out
 
     def optimize_embeddings(
         self, 
@@ -685,6 +724,7 @@ class MultiNeRF(Method):
             dataset: Dataset.
             embeddings: Optional initial embeddings.
         """
+        del dataset, embeddings
         raise NotImplementedError()
 
     def get_train_embedding(self, index: int) -> Optional[np.ndarray]:
@@ -694,5 +734,6 @@ class MultiNeRF(Method):
         Args:
             index: Index of the image.
         """
+        del index
         return None
 

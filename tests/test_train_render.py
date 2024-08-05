@@ -80,7 +80,8 @@ class _TestMethod(Method):
     def optimize_embeddings(self, *args, **kwargs):
         raise NotImplementedError()
 
-    def render(self, cameras: Cameras, embeddings=None) -> Iterable[RenderOutput]:
+    def render(self, cameras: Cameras, *, embeddings=None, **kwargs) -> Iterable[RenderOutput]:
+        del kwargs
         assert embeddings is None
         _TestMethod._render_call_step.append(_TestMethod._last_step)
         for i in range(len(cameras)):
@@ -121,7 +122,7 @@ def wandb_init_run():
         yield
 
 
-@pytest.mark.parametrize("vis", ["none", "wandb", "tensorboard", "wandb+tensorboard"])
+@pytest.mark.parametrize("vis", ["none", "wandb", "tensorboard", "wandb,tensorboard"])
 def test_train_command(mock_extras, tmp_path, wandb_init_run, vis):
     # if sys.version_info[:2] == (3, 7) and vis == "tensorboard":
     #     # TODO: Investigate why this test fails in Python 3.7

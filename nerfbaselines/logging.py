@@ -284,6 +284,7 @@ class ConcatLogger(BaseLogger):
 
 class TensorboardLoggerEvent(BaseLoggerEvent):
     def __init__(self, logdir, summaries, step):
+        os.makedirs(logdir, exist_ok=True)
         self._step = step
         self._logdir = logdir
         self._summaries = summaries
@@ -350,8 +351,8 @@ class TensorboardLoggerEvent(BaseLoggerEvent):
         )  # type: ignore
         smd = SummaryMetadata(plugin_data=plugin_data)  # type: ignore
         tensor = TensorProto(
-            dtype="DT_STRING",
-            string_val=[text.encode("utf8")],
+            dtype="DT_STRING",  # type: ignore
+            string_val=[text.encode("utf8")],  # type: ignore
             tensor_shape=TensorShapeProto(dim=[TensorShapeProto.Dim(size=1)]),  # type: ignore
         )  # type: ignore
         self._summaries.append(Summary.Value(tag=tag, metadata=smd, tensor=tensor))  # type: ignore
@@ -524,13 +525,13 @@ class TensorboardLoggerEvent(BaseLoggerEvent):
 
             sum_sq = values.dot(values)
             return HistogramProto(  # type: ignore
-                min=values.min(),
-                max=values.max(),
-                num=len(values),
-                sum=values.sum(),
-                sum_squares=sum_sq,
-                bucket_limit=limits.tolist(),
-                bucket=counts.tolist(),
+                min=values.min(),  # type: ignore
+                max=values.max(),  # type: ignore
+                num=len(values),  # type: ignore
+                sum=values.sum(),  # type: ignore
+                sum_squares=sum_sq,  # type: ignore
+                bucket_limit=limits.tolist(),  # type: ignore
+                bucket=counts.tolist(),  # type: ignore
             )
 
         hist = make_histogram(values, bins, max_bins)
@@ -596,9 +597,9 @@ def _tensorboard_hparams(hparam_dict=None, metrics_list=None, hparam_domain_disc
 
             hps.append(
                 HParamInfo(  # type: ignore
-                    name=k,
-                    type=DataType.Value("DATA_TYPE_FLOAT64"),
-                    domain_discrete=domain_discrete,
+                    name=k,  # type: ignore
+                    type=DataType.Value("DATA_TYPE_FLOAT64"),  # type: ignore
+                    domain_discrete=domain_discrete,  # type: ignore
                 )
             )
             continue
@@ -618,9 +619,9 @@ def _tensorboard_hparams(hparam_dict=None, metrics_list=None, hparam_domain_disc
 
             hps.append(
                 HParamInfo(  # type: ignore
-                    name=k,
-                    type=DataType.Value("DATA_TYPE_STRING"),
-                    domain_discrete=domain_discrete,
+                    name=k,  # type: ignore
+                    type=DataType.Value("DATA_TYPE_STRING"),  # type: ignore
+                    domain_discrete=domain_discrete,  # type: ignore
                 )
             )
             continue
@@ -640,9 +641,9 @@ def _tensorboard_hparams(hparam_dict=None, metrics_list=None, hparam_domain_disc
 
             hps.append(
                 HParamInfo(  # type: ignore
-                    name=k,
-                    type=DataType.Value("DATA_TYPE_BOOL"),
-                    domain_discrete=domain_discrete,
+                    name=k,  # type: ignore
+                    type=DataType.Value("DATA_TYPE_BOOL"),  # type: ignore
+                    domain_discrete=domain_discrete,  # type: ignore
                 )
             )
             continue

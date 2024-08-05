@@ -301,10 +301,16 @@ class OptimizeEmbeddingsOutput(TypedDict):
     metrics: NotRequired[Dict[str, Sequence[float]]]
 
 
+class RenderOutputType(TypedDict, total=False):
+    name: Required[str]
+    type: Literal["color", "depth"]
+
+
 class MethodInfo(TypedDict, total=False):
     name: Required[str]
     required_features: FrozenSet[DatasetFeature]
     supported_camera_models: FrozenSet
+    supported_outputs: Tuple[Union[str, RenderOutputType], ...]
 
 
 class ModelInfo(TypedDict, total=False):
@@ -317,6 +323,11 @@ class ModelInfo(TypedDict, total=False):
     required_features: FrozenSet[DatasetFeature]
     supported_camera_models: FrozenSet
     hparams: Dict[str, Any]
+    supported_outputs: Tuple[str, ...]
+
+
+class RenderOptions(TypedDict, total=False):
+    outputs: Tuple[str, ...]
 
 
 @runtime_checkable
@@ -385,7 +396,7 @@ class Method(Protocol):
         raise NotImplementedError()
 
     @abstractmethod
-    def render(self, cameras: Cameras, embeddings: Optional[Sequence[np.ndarray]] = None) -> Iterable[RenderOutput]:  # [h w c]
+    def render(self, cameras: Cameras, *, embeddings: Optional[Sequence[np.ndarray]] = None, options: Optional[RenderOptions] = None) -> Iterable[RenderOutput]:  # [h w c]
         """
         Render images.
 
@@ -431,6 +442,11 @@ class EvaluationProtocol(Protocol):
         ...
 
 
+class LicenseSpec(TypedDict, total=True):
+    name: str
+    url: str
+
+
 class DatasetSpecMetadata(TypedDict, total=False):
     id: str
     name: str
@@ -442,6 +458,7 @@ class DatasetSpecMetadata(TypedDict, total=False):
     metrics: List[str]
     default_metric: str
     scenes: List[Dict[str, str]]
+    licenses: List[LicenseSpec]
 
 
 class LoadDatasetFunction(Protocol):
