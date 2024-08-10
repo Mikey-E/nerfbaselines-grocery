@@ -3,7 +3,9 @@
 This is a fork for benchmarking the grocery dataset.
 The original readme text at the time of the fork is after the fork preamble.
 
-Table of models setup (reproducibility). Results are (theirs, ours). Some of our results are averaged from multiple runs.
+Tables of models setup (reproducibility). Results are (theirs, ours). Some of our results are averaged from multiple runs.
+
+Geo1
 
 | model                   | conda setup? | docker setup? | dataset | PSNR | SSIM | LPIPS (VGG) | Notes |
 |----------|----------|----------|----------|----------|----------|----------|----------|
@@ -19,6 +21,23 @@ Table of models setup (reproducibility). Results are (theirs, ours). Some of our
 | kplanes                 |      ✅      |      ❌       | lego | 35.73, 35.63 | 0.981, 0.981 | 0.047, 0.048 | docker: numpy error |
 | tensorf                 |      ✅      |      ❌       | lego | 36.49, 36.50 | 0.983, 0.983 | 0.022, 0.022 | docker: numpy error |
 | nerfw                   |      ❌      |      ❌       | | | | | numpy error |
+
+Medicine Bow
+
+| model                   | conda setup? | docker setup? | dataset | PSNR | SSIM | LPIPS (VGG) | Notes |
+|----------|----------|----------|----------|----------|----------|----------|----------|
+| instant-ngp             |      ❌     |      ❌       | | | | | |
+| nerfstudio (nerfacto)   |      ✅     |      ❌       | | | | | |
+| gaussian-opacity-fields |      ?      |      ❌       | | | | | |
+| gaussian-splatting      |      ?      |      ❌       | | | | | |
+| mip-splatting           |      ?      |      ❌       | | | | | |
+| mipnerf360              |      ?      |      ❌       | | | | | |
+| zipnerf                 |      ?      |      ❌       | | | | | |
+| nerf                    |      ?      |      ❌       | | | | | |
+| tetra-nerf              |      ?      |      ❌       | | | | | |
+| kplanes                 |      ?      |      ❌       | | | | | |
+| tensorf                 |      ?      |      ❌       | | | | | |
+| nerfw                   |      ?      |      ❌       | | | | | |
 
 Recommended:
 - Create a soft-link called "datasets", at the highest directory level,
