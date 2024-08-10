@@ -26,8 +26,8 @@ Medicine Bow
 
 | model                   | conda setup? | docker setup? | dataset | PSNR | SSIM | LPIPS (VGG) | Notes |
 |----------|----------|----------|----------|----------|----------|----------|----------|
-| instant-ngp             |      ❌     |      ❌       | | | | | |
-| nerfstudio (nerfacto)   |      ✅     |      ❌       | | | | | |
+| instant-ngp             |      ❌     |      ❌       | | | | | breaks nodes |
+| nerfstudio (nerfacto)   |      ✅     |      ❌       | lego | 31.37, 30.54 | 0.967, 0.963 | 0.069, 0.066 | |
 | gaussian-opacity-fields |      ?      |      ❌       | | | | | |
 | gaussian-splatting      |      ?      |      ❌       | | | | | |
 | mip-splatting           |      ?      |      ❌       | | | | | |
