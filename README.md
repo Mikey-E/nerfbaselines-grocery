@@ -26,17 +26,17 @@ Medicine Bow
 
 | model                   | conda setup? | docker setup? | dataset | PSNR | SSIM | LPIPS (VGG) | Notes |
 |----------|----------|----------|----------|----------|----------|----------|----------|
-| instant-ngp             |      ❌     |      ❌       | | | | | breaks nodes |
+| instant-ngp             |      ❌     |      ❌       | | | | | numpy version bypassed by activ and deactiv the ingp env |
 | nerfstudio (nerfacto)   |      ✅     |      ❌       | lego | 31.37, 30.54 | 0.967, 0.963 | 0.069, 0.066 | |
-| gaussian-opacity-fields |      ?      |      ❌       | | | | | |
-| gaussian-splatting      |      ?      |      ❌       | | | | | |
-| mip-splatting           |      ?      |      ❌       | | | | | |
-| mipnerf360              |      ?      |      ❌       | | | | | |
-| zipnerf                 |      ?      |      ❌       | | | | | |
-| nerf                    |      ?      |      ❌       | | | | | |
-| tetra-nerf              |      ?      |      ❌       | | | | | |
-| kplanes                 |      ?      |      ❌       | | | | | |
-| tensorf                 |      ?      |      ❌       | | | | | |
+| gaussian-opacity-fields |      ?      |      ❌       | | | | | numpy version |
+| gaussian-splatting      |      ?      |      ❌       | | | | | numpy version |
+| mip-splatting           |      ?      |      ❌       | | | | | numpy version |
+| mipnerf360              |      ?      |      ❌       | | | | | numpy version |
+| zipnerf                 |      ?      |      ❌       | | | | | numpy version |
+| nerf                    |      ?      |      ❌       | | | | | numpy version |
+| tetra-nerf              |      ?      |      ❌       | | | | | uses nerfstudio env which is gone now |
+| kplanes                 |      ?      |      ❌       | | | | | numpy version |
+| tensorf                 |      ?      |      ❌       | | | | | numpy version |
 | nerfw                   |      ?      |      ❌       | | | | | |
 
 Recommended:
@@ -45,6 +45,7 @@ to point to wherever you will keep the nerfbaselines datasets.
 - Create a results directory for keeping info about training runs.
 - With that being done, you'll be able to stay organized with training run commands in similar form to:
 nerfbaselines train --method instant-ngp --data datasets/mipnerf360/kitchen --output results/ingp_kitchen
+- Set env variable NERFBASELINES_PREFIX to wherever you want new environments to be made.
 
 ---- END fork preamble ----
 
