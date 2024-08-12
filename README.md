@@ -29,7 +29,7 @@ Medicine Bow
 | instant-ngp             |      ✅     |      ❌       | kitchen | 29.02, 29.15 | 0.844, 0.847 | 0.255, 0.253 | numpy version bypassed by activ and deactiv the ingp env |
 | nerfstudio (nerfacto)   |      ✅     |      ❌       | lego | 31.37, 30.54 | 0.967, 0.963 | 0.069, 0.066 | |
 | gaussian-opacity-fields |      ?      |      ❌       | | | | | numpy version |
-| gaussian-splatting      |      ?      |      ❌       | | | | | numpy version |
+| gaussian-splatting      |      ✅     |      ❌       | | | | | |
 | mip-splatting           |      ?      |      ❌       | | | | | numpy version |
 | mipnerf360              |      ?      |      ❌       | | | | | numpy version |
 | zipnerf                 |      ?      |      ❌       | | | | | numpy version |
