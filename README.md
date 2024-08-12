@@ -31,7 +31,7 @@ Medicine Bow
 | gaussian-opacity-fields |      ✅     |      ❌       | | | | | works but aborts |
 | gaussian-splatting      |      ✅     |      ❌       | | | | | works but aborts |
 | mip-splatting           |      ✅     |      ❌       | | | | | works but aborts |
-| mipnerf360              |      ?      |      ❌       | | | | | numpy version |
+| mipnerf360              |      ❌     |      ❌       | | | | | XLA runtime error |
 | zipnerf                 |      ?      |      ❌       | | | | | numpy version |
 | nerf                    |      ?      |      ❌       | | | | | numpy version |
 | tetra-nerf              |      ?      |      ❌       | | | | | uses nerfstudio env which is gone now |
