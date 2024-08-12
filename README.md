@@ -30,7 +30,7 @@ Medicine Bow
 | nerfstudio (nerfacto)   |      ✅     |      ❌       | lego | 31.37, 30.54 | 0.967, 0.963 | 0.069, 0.066 | |
 | gaussian-opacity-fields |      ✅     |      ❌       | | | | | works but aborts |
 | gaussian-splatting      |      ✅     |      ❌       | | | | | works but aborts |
-| mip-splatting           |      ?      |      ❌       | | | | | numpy version |
+| mip-splatting           |      ✅     |      ❌       | | | | | works but aborts |
 | mipnerf360              |      ?      |      ❌       | | | | | numpy version |
 | zipnerf                 |      ?      |      ❌       | | | | | numpy version |
 | nerf                    |      ?      |      ❌       | | | | | numpy version |
