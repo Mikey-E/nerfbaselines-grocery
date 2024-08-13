@@ -28,12 +28,12 @@ Medicine Bow
 |----------|----------|----------|----------|----------|----------|----------|----------|
 | instant-ngp             |      ✅     |      ❌       | kitchen | 29.02, 29.15 | 0.844, 0.847 | 0.255, 0.253 | numpy version bypassed by activ and deactiv the ingp env |
 | nerfstudio (nerfacto)   |      ✅     |      ❌       | lego | 31.37, 30.54 | 0.967, 0.963 | 0.069, 0.066 | |
-| gaussian-opacity-fields |      ✅     |      ❌       | | | | | works but aborts |
-| gaussian-splatting      |      ✅     |      ❌       | | | | | works but aborts |
-| mip-splatting           |      ✅     |      ❌       | | | | | works but aborts |
+| gaussian-opacity-fields |      ✅     |      ❌       | | | | | trains but aborts |
+| gaussian-splatting      |      ✅     |      ❌       | | | | | trains but aborts |
+| mip-splatting           |      ✅     |      ❌       | | | | | trains but aborts |
 | mipnerf360              |      ❌     |      ❌       | | | | | XLA runtime error |
-| zipnerf                 |      ?      |      ❌       | | | | | numpy version |
-| nerf                    |      ?      |      ❌       | | | | | numpy version |
+| zipnerf                 |      ❌     |      ❌       | | | | | XLA runtime error |
+| nerf                    |      ✅     |      ❌       | | | | | trains but will take 17 hours |
 | tetra-nerf              |      ?      |      ❌       | | | | | uses nerfstudio env which is gone now |
 | kplanes                 |      ?      |      ❌       | | | | | numpy version |
 | tensorf                 |      ?      |      ❌       | | | | | numpy version |
