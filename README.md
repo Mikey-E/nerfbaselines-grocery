@@ -28,16 +28,16 @@ Medicine Bow
 |----------|----------|----------|----------|----------|----------|----------|----------|
 | instant-ngp             |      ✅     |      ❌       | kitchen | 29.02, 29.15 | 0.844, 0.847 | 0.255, 0.253 | numpy version bypassed by activ and deactiv the ingp env |
 | nerfstudio (nerfacto)   |      ✅     |      ❌       | lego | 31.37, 30.54 | 0.967, 0.963 | 0.069, 0.066 | |
-| gaussian-opacity-fields |      ✅     |      ❌       | | | | | trains but aborts |
-| gaussian-splatting      |      ✅     |      ❌       | | | | | trains but aborts |
-| mip-splatting           |      ✅     |      ❌       | | | | | trains but aborts |
+| gaussian-opacity-fields |      ?      |      ❌       | | | | | trains but aborts |
+| gaussian-splatting      |      ?      |      ❌       | | | | | trains but aborts |
+| mip-splatting           |      ?      |      ❌       | | | | | trains but aborts |
 | mipnerf360              |      ❌     |      ❌       | | | | | XLA runtime error |
 | zipnerf                 |      ❌     |      ❌       | | | | | XLA runtime error |
-| nerf                    |      ✅     |      ❌       | | | | | trains but will take 17 hours per run |
+| nerf                    |      ?      |      ❌       | | | | | trains but will take 17 hours per run |
 | tetra-nerf              |      ❌     |      ❌       | | | | | uses nerfstudio env which is gone now, no module named torch |
 | kplanes                 |      ✅     |      ❌       | lego | 35.73, 35.64 | 0.981, 0.981 | 0.047, 0.051 | |
 | tensorf                 |      ✅     |      ❌       | lego | 36.49, 36.52 | 0.983, 0.983 | 0.022, 0.022 | |
-| nerfw                   |      ?      |      ❌       | | | | | TypeError: __init__() got an unexpected keyword argument 'devices' |
+| nerfw                   |      ❌     |      ❌       | | | | | TypeError: __init__() got an unexpected keyword argument 'devices' |
 
 Recommended:
 - Create a soft-link called "datasets", at the highest directory level,
