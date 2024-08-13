@@ -35,7 +35,7 @@ Medicine Bow
 | zipnerf                 |      ❌     |      ❌       | | | | | XLA runtime error |
 | nerf                    |      ✅     |      ❌       | | | | | trains but will take 17 hours |
 | tetra-nerf              |      ?      |      ❌       | | | | | uses nerfstudio env which is gone now |
-| kplanes                 |      ?      |      ❌       | | | | | numpy version |
+| kplanes                 |      ✅     |      ❌       | | | | | |
 | tensorf                 |      ?      |      ❌       | | | | | numpy version |
 | nerfw                   |      ?      |      ❌       | | | | | |
 
