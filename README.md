@@ -28,9 +28,9 @@ Medicine Bow
 |----------|----------|----------|----------|----------|----------|----------|----------|
 | instant-ngp             |      ✅     |      ❌       | kitchen | 29.02, 29.15 | 0.844, 0.847 | 0.255, 0.253 | numpy version bypassed by activ and deactiv the ingp env |
 | nerfstudio (nerfacto)   |      ✅     |      ❌       | lego | 31.37, 30.54 | 0.967, 0.963 | 0.069, 0.066 | |
-| gaussian-opacity-fields |      ?      |      ❌       | | | | | trains but aborts |
-| gaussian-splatting      |      ?      |      ❌       | | | | | trains but aborts |
-| mip-splatting           |      ?      |      ❌       | | | | | trains but aborts |
+| gaussian-opacity-fields |      ✅     |      ❌       | | | | | |
+| gaussian-splatting      |      ✅     |      ❌       | | | | | |
+| mip-splatting           |      ✅     |      ❌       | | | | | |
 | mipnerf360              |      ❌     |      ❌       | | | | | XLA runtime error |
 | zipnerf                 |      ❌     |      ❌       | | | | | XLA runtime error |
 | nerf                    |      ?      |      ❌       | | | | | trains but will take 17 hours per run |
@@ -39,6 +39,15 @@ Medicine Bow
 | tensorf                 |      ✅     |      ❌       | lego | 36.49, 36.52 | 0.983, 0.983 | 0.022, 0.022 | |
 | nerfw                   |      ❌     |      ❌       | | | | | TypeError: __init__() got an unexpected keyword argument 'devices' |
 
+Important:
+- utils/convert.py requires colmap on the system. Our recommended way is to simply run:
+`conda install -c conda-forge colmap` and consider that you may need a cuda toolkit first for this.
+Highly consider making a separate conda environment to run convert.py. Before running convert.py,
+the dataset about to be converted must have its images folder named as "input". utils contains a script for doing this
+and it should be run first if the input image folder is not already named as such.
+Not all the new images may write to the created image folder.
+In our case we (afterward) have renamed input to images so they are all there and are all the original size.
+
 Recommended:
 - Create a soft-link called "datasets", at the highest directory level,
 to point to wherever you will keep the nerfbaselines datasets.
@@ -46,6 +55,17 @@ to point to wherever you will keep the nerfbaselines datasets.
 - With that being done, you'll be able to stay organized with training run commands in similar form to:
 nerfbaselines train --method instant-ngp --data datasets/mipnerf360/kitchen --output results/ingp_kitchen
 - Set env variable NERFBASELINES_PREFIX to wherever you want new environments to be made.
+
+Environment variables to set (with example values that you may change as needed)
+- export NERFBASELINES_PREFIX=/project/3dllms/melgin/conda/envs/
+- export NERFBASELINES_HOME_DIR=/project/3dllms/melgin/nerfbaselines-grocery/
+- export GROCERY_DATA_CONVERTED_DIR=/project/3dllms/DATASETS/CONVERTED/UNGROUPED/
+- export GROCERY_DATA_CONVERTED_GROUPED_DIR=/project/3dllms/DATASETS/CONVERTED/GROUPED/
+- export GROCERY_DATA_NORMAL_DIR=/project/3dllms/DATASETS/PROCESSED/
+- export GROCERY_DATA_NORMAL_GROUPED_DIR=/project/3dllms/DATASETS/GROUPED/
+- export GROCERY_RESULTS_DIR=${NERFBASELINES_HOME_DIR}results/
+- export GROCERY_LOGS_DIR=${NERFBASELINES_HOME_DIR}logs/
+- export GROCERY_CSVS_DIR=${NERFBASELINES_HOME_DIR}csv/csv_results/
 
 ---- END fork preamble ----
 
