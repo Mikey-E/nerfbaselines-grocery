@@ -32,9 +32,19 @@ parser.add_argument(
 )
 args = parser.parse_args(sys.argv[2:])#Requires model as first argument before options
 
+#Confirm settings are as user wants
+print("------- Settings for this run --------")
+print("data path: " + args.data_path)
+print("results path: " + args.results_path)
+print("model: " + model)
+print("--------------------------------------")
+if (input("Continue? y/[n]: ") != 'y'): exit(0)
+
 if args.triage:
     import re
     pattern = r"^results-.*\.json$"
+else:#Warn
+    if (input("triage flag not set, this will re-run any previous successful runs. Continue? y/[n]: ") != 'y'): exit(0)
 
 for scene_folder in os.listdir(args.data_path):
     if args.triage:
