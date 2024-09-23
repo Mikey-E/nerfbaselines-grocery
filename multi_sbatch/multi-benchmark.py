@@ -1,5 +1,5 @@
 #Author: Michael Elgin
-#Example run: python multi-benchmark.py mip-splatting --triage > mbench_ms_live.out
+#Example run: python multi-benchmark.py mip-splatting --triage
 
 import os
 import sys
@@ -30,7 +30,16 @@ parser.add_argument(
     default=os.getenv("GROCERY_RESULTS_DIR") + model + "/",
     help="Results directory: where to put the results folders for each scene",
 )
+parser.add_argument(
+    "--logs_path",
+    default=os.getenv("GROCERY_LOGS_DIR") + model + "/",
+    help="Logs directory: where to put the log folders for each scene",
+)
 args = parser.parse_args(sys.argv[2:])#Requires model as first argument before options
+
+#Ask whether logs should be cleared
+if (input("clear logs? y/[n]: ") == 'y'):
+    os.system("rm -rf " + args.logs_path)
 
 #Confirm settings are as user wants
 print("------- Settings for this run --------")
