@@ -37,6 +37,16 @@ except ImportError:
 import torch
 from torch import nn
 
+#@@@
+# Check if CUDA is available
+if torch.cuda.is_available():
+    # Now it's safe to set CUDA configurations
+    torch.cuda.set_device(0)
+#    torch.cuda.set_per_process_memory_fraction(0.8)
+    torch.cuda.set_per_process_memory_fraction(0.2)
+else:
+    print("@@@CUDA is not available, skipping CUDA initialization.")
+
 from nerfbaselines.types import Method, MethodInfo, OptimizeEmbeddingsOutput, RenderOutput, ModelInfo
 from nerfbaselines.types import Cameras, camera_model_to_int
 from nerfbaselines.datasets import Dataset
@@ -420,6 +430,11 @@ class GaussianOpacityFields(Method):
         iteration = step + 1  # Gaussian Splatting is 1-indexed
         del step
 
+        #@@@
+#        print("@@@before emptying cache")
+#        torch.cuda.empty_cache()
+#        print("@@@after emptying cache")
+
         self.gaussians.update_learning_rate(iteration)
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
@@ -498,6 +513,7 @@ class GaussianOpacityFields(Method):
 
         # Final loss
         loss = rgb_loss + depth_normal_loss * lambda_depth_normal + distortion_loss * lambda_distortion
+
         loss.backward()
 
         with torch.no_grad():
