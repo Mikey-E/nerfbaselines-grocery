@@ -38,8 +38,9 @@ parser.add_argument(
 args = parser.parse_args(sys.argv[2:])#Requires model as first argument before options
 
 #Ask whether logs should be cleared
-if (input("clear logs? y/[n]: ") == 'y'):
-    os.system("rm -rf " + args.logs_path)
+if (os.path.isdir(args.logs_path) and len(os.listdir(args.logs_path)) != 0):#if logs are already there
+    if (input("clear logs? y/[n]: ") == 'y'):
+        os.system("rm -rf " + args.logs_path)
 
 #Confirm settings are as user wants
 print("------- Settings for this run --------")
