@@ -1,0 +1,1 @@
+nerfbaselines train --method gaussian-opacity-fields --data /cluster/medbow/home/melgin/tmp_candelete/04_19_2024_W_F_Sugar_P_2_changed_input --output /cluster/medbow/project/3dllms/melgin/nerfbaselines-grocery/results/poc_gof_sugar_changed_input1
