@@ -20,7 +20,7 @@
 
 #mip-splatting has oom hazard, so minimum memory is a good idea
 #above 128GB tends to choke out job scheduling (at least on h100s)
-#SBATCH --mem=16GB #Total memory (this is a minimum for scheduling on a node)
+#SBATCH --mem=64GB #Total memory (this is a minimum for scheduling on a node)
 
 #Probably don't want to limit gpu type unless it's necessary
 ##SBATCH --gres=gpu:h100:1 #Number of GPUs per node
@@ -29,6 +29,10 @@
 #Specifying the logs programatically is better, and that can't be done by sbatch directive
 #Preferably use -o in srun below
 ##SBATCH -o ./logs/$1.log #DO NOT USE, IT WON'T INTERPOLATE $1
+
+#a30s seem to cause problems so those are disallowed
+##SBATCH --constraint="l40s|h100"
+#SBATCH --constraint="h100"
 
 scene_folder=$1 #particular scene folder
 data_path=$2 #data path (where all scene folders live)
