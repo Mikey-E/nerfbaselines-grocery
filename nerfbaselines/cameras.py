@@ -57,7 +57,18 @@ def _iterative_undistortion(distortion: _DistortionFunction, uv: TTensor, params
             ),
             -1,
         ).reshape((*dx.shape, 2))
+
+        #@@@ to solve singular matrix error
+#        try:
         step_x = np.linalg.solve(J, (x + dx - uv)[..., None]).squeeze(-1)
+#        except:
+#            step_x = np.linalg.solve(np.linalg.pinv(J), (x + dx - uv)[..., None]).squeeze(-1)
+#            epsilon = 1e-6
+#            step_x = np.linalg.solve(
+#                J + np.eye(J.shape[0])*epsilon,
+#                (x + dx - uv)[..., None]
+#            ).squeeze(-1)
+
         x -= step_x
         local_mask = (step_x**2).sum(-1) >= max_step_norm
 
