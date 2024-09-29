@@ -356,6 +356,10 @@ class Trainer:
 
     def train_iteration(self):
         start = time.perf_counter()
+
+        #@@@ trying to clear... maybe that'll work
+#        torch.cuda.empty_cache()
+
         metrics = self.method.train_iteration(self.step)
 
         elapsed = time.perf_counter() - start
@@ -367,6 +371,10 @@ class Trainer:
         metrics["total-train-time"] = self._total_train_time
         if "num_rays" in metrics:
             batch_size = metrics.pop("num_rays")
+
+            #@@@ might not print out (isn't getting called???)
+            print("@@@batch_size: " + str(batch_size))
+
             metrics["rays-per-second"] = batch_size / elapsed
             if self._average_image_size is not None:
                 metrics["fps"] = batch_size / elapsed / self._average_image_size
@@ -634,4 +642,16 @@ def train_command(
 
 
 if __name__ == "__main__":
+
+    #@@@
+#    import torch
+#    torch.cuda.set_device(0)
+#    torch.cuda.set_per_process_memory_fraction(0.8)
+#    torch.cuda.set_per_process_memory_fraction(0.2)
+#    torch.cuda.set_per_process_memory_fraction(0.02)
+#    torch.cuda.set_per_process_memory_fraction(0.002)
+#    torch.cuda.set_per_process_memory_fraction(0.9)
+#    torch.cuda.set_per_process_memory_fraction(0.99)
+#    torch.cuda.set_per_process_memory_fraction(0.999)
+
     train_command()  # pylint: disable=no-value-for-parameter
