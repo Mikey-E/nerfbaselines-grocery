@@ -13,3 +13,6 @@ nerfbaselines/_version.py
 .vim/
 build/
 datasets
+
+logs
+results
