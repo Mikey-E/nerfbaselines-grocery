@@ -72,6 +72,6 @@ for scene_folder in os.listdir(args.data_path):
     command =\
         "sbatch -J " + model + "_" + scene_folder + " "\
         + os.getenv("NERFBASELINES_HOME_DIR") + "slurm_scripts/benchmark_" + model + ".sh "\
-        + scene_folder + " " + args.data_path + " " + args.results_path
+        + scene_folder + " " + args.data_path + " " + args.results_path + " " + args.logs_path
     os.system("echo command is: " + command)
     os.system(command)

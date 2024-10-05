@@ -18,10 +18,6 @@
 ##SBATCH --partition=inv-ssheshap
 ##SBATCH --partition=mb-l40s
 
-#mip-splatting has oom hazard, so minimum memory is a good idea
-#above 128GB tends to choke out job scheduling (at least on h100s)
-#SBATCH --mem=64GB #Total memory (this is a minimum for scheduling on a node)
-
 #Probably don't want to limit gpu type unless it's necessary
 ##SBATCH --gres=gpu:h100:1 #Number of GPUs per node
 #SBATCH --gres=gpu:1
@@ -30,9 +26,18 @@
 #Preferably use -o in srun below
 ##SBATCH -o ./logs/$1.log #DO NOT USE, IT WON'T INTERPOLATE $1
 
-#a30s seem to cause problems so those are disallowed
+#a30s seem to cause problems so those may be disallowed
 ##SBATCH --constraint="l40s|h100"
-#SBATCH --constraint="h100"
+##SBATCH --constraint="h100"
+##SBATCH --constraint="l40s"
+##SBATCH --constraint="a30"
+
+#zipnerf might have oom hazard, so minimum memory is a good idea
+#above 128GB tends to choke out job scheduling (at least on h100s)
+##SBATCH --mem=64GB #Total memory (this is a minimum for scheduling on a node)
+##SBATCH --mem=128GB #Total memory (this is a minimum for scheduling on a node)
+##SBATCH --mem=512GB #Total memory (this is a minimum for scheduling on a node)
+#SBATCH --mem=32GB #Total memory (this is a minimum for scheduling on a node)
 
 scene_folder=$1 #particular scene folder
 data_path=$2 #where all scene folders live
@@ -52,4 +57,4 @@ ml gcc/13.2.0
 ml cuda-toolkit/12.4.1
 
 cd $NERFBASELINES_HOME_DIR
-srun -o $logs_path$scene_folder.log nerfbaselines train --method mip-splatting --data $data_path$scene_folder --output $results_path$scene_folder
+srun -o $logs_path$scene_folder.log nerfbaselines train --method zipnerf --data $data_path$scene_folder --output $results_path$scene_folder

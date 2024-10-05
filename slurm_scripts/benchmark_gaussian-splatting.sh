@@ -35,11 +35,12 @@
 ##SBATCH --constraint="h100"
 
 scene_folder=$1 #particular scene folder
-data_path=$2 #data path (where all scene folders live)
-results_path=$3 #results path (where all scene folders of this kind are stored)
+data_path=$2 #where all scene folders live
+results_path=$3 #where all results folders of this kind will go
+logs_path=$4 #where the log files will go
 
 #Add slashes to the paths if not present. No need for scene_folder
-for var in data_path results_path; do
+for var in data_path results_path logs_path; do
 	if [[ "${!var}" != */ ]]; then  #Check if the value of the variable doesn't end with a slash
         eval "$var=\"${!var}/\""  #Add a slash to the end of the value and update the variable
     fi
@@ -51,4 +52,4 @@ ml gcc/13.2.0
 ml cuda-toolkit/12.4.1
 
 cd $NERFBASELINES_HOME_DIR
-srun -o ./logs/gaussian-splatting/$1.log nerfbaselines train --method gaussian-splatting --data $data_path$scene_folder --output $results_path$scene_folder
+srun -o $logs_path$scene_folder.log nerfbaselines train --method gaussian-splatting --data $data_path$scene_folder --output $results_path$scene_folder
