@@ -67,6 +67,8 @@ Environment variables to set (with example values that you may change as needed)
 - export GROCERY_LOGS_DIR=${NERFBASELINES_HOME_DIR}logs/
 - export GROCERY_CSVS_DIR=${NERFBASELINES_HOME_DIR}csv/csv_results/
 
+Add the NERFBASELINES_HOME_DIR to the PYTHONPATH
+
 Changes to /cluster/medbow/project/3dllms/melgin/conda/envs/conda-envs/gaussian-opacity-fields/
 492c89517b613ce96a3fbe243d6698317e9f38e0a219ac38d72949ecf48780f7/
 gaussian-opacity-fields/src/gaussian-opacity-fields/scene/gaussian_model.py:
