@@ -44,9 +44,10 @@ if (os.path.isdir(args.logs_path) and len(os.listdir(args.logs_path)) != 0):#if 
 
 #Confirm settings are as user wants
 print("------- Settings for this run --------")
+print("model: " + model)
 print("data path: " + args.data_path)
 print("results path: " + args.results_path)
-print("model: " + model)
+print("logs path: " + args.logs_path)
 print("--------------------------------------")
 if (input("Continue? y/[n]: ") != 'y'): exit(0)
 
