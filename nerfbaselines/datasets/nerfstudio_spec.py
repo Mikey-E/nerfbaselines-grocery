@@ -1,9 +1,15 @@
-from ..registry import register
+from nerfbaselines import register
 
 
-register(name="nerfstudio", spec={
+# Register nerfstudio loader
+register({
+    "id": "nerfstudio",
     "load_dataset_function": ".nerfstudio:load_nerfstudio_dataset",
-    "priority": 160,
+})
+
+# Register nerfstudio dataset
+register({
+    "id": "nerfstudio",
     "download_dataset_function": ".nerfstudio:download_nerfstudio_dataset",
     "metadata": {
         "id": "nerfstudio",

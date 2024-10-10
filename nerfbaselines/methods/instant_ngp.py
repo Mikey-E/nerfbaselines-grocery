@@ -1,3 +1,5 @@
+import io
+import base64
 import hashlib
 import gzip
 import msgpack
@@ -10,16 +12,73 @@ import contextlib
 import json
 import os
 from pathlib import Path
-from typing import Optional, Iterable, Sequence
+from typing import Optional, Union
+try:
+    from typing import get_origin, get_args
+except ImportError:
+    from typing_extensions import get_origin, get_args
 
 import tempfile
 import numpy as np
 from PIL import Image, ImageOps
-from nerfbaselines.types import Dataset, Method, MethodInfo, ModelInfo, OptimizeEmbeddingsOutput, RenderOutput
-from nerfbaselines.types import Cameras, camera_model_to_int
-from nerfbaselines.utils import cast_value, flatten_hparams, remap_error
-from nerfbaselines.pose_utils import pad_poses, unpad_poses
-from nerfbaselines.io import numpy_from_base64, numpy_to_base64
+from nerfbaselines import (
+    Dataset, Method, MethodInfo, ModelInfo, RenderOutput,
+    Cameras, camera_model_to_int
+)
+from nerfbaselines.utils import pad_poses, unpad_poses
+
+
+def numpy_to_base64(array: np.ndarray) -> str:
+    with io.BytesIO() as f:
+        np.save(f, array)
+        return base64.b64encode(f.getvalue()).decode("ascii")
+
+
+def numpy_from_base64(data: str) -> np.ndarray:
+    with io.BytesIO(base64.b64decode(data)) as f:
+        return np.load(f)
+
+
+def cast_value(tp, value):
+    origin = get_origin(tp)
+    if origin is Union:
+        for t in get_args(tp):
+            try:
+                return cast_value(t, value)
+            except ValueError:
+                pass
+            except TypeError:
+                pass
+        raise TypeError(f"Value {value} is not in {tp}")
+    if tp is type(None):
+        if str(value).lower() == "none":
+            return None
+        else:
+            raise TypeError(f"Value {value} is not None")
+    if tp is bool:
+        if str(value).lower() in {"true", "1", "yes"}:
+            return True
+        elif str(value).lower() in {"false", "0", "no"}:
+            return False
+        else:
+            raise TypeError(f"Value {value} is not a bool")
+    if tp in {int, float, bool, str}:
+        return tp(value)
+    if isinstance(value, tp):
+        return value
+    raise TypeError(f"Cannot cast value {value} to type {tp}")
+
+
+def flatten_hparams(hparams, *, separator: str = "/", _prefix: str = ""):
+    flat = {}
+    for k, v in hparams.items():
+        if _prefix:
+            k = f"{_prefix}{separator}{k}"
+        if isinstance(v, dict):
+            flat.update(flatten_hparams(v, _prefix=k, separator=separator).items())
+        else:
+            flat[k] = v
+    return flat
 
 
 def rotmat(a, b):
@@ -78,7 +137,7 @@ def get_transforms(dataset: Dataset, dataparser_transform=None, dataparser_scale
         camera["k3"] = 0
         camera["k4"] = 0
         camera["is_fisheye"] = False
-        cam_type = dataset["cameras"].camera_types[i]
+        cam_type = dataset["cameras"].camera_models[i]
         if cam_type == camera_model_to_int("pinhole"):
             pass
         elif cam_type in {camera_model_to_int("opencv"), camera_model_to_int("opencv_fisheye")}:
@@ -199,20 +258,13 @@ def _config_overrides_fix_types(config_overrides):
 
 
 class InstantNGP(Method):
-    _method_name: str = "instant-ngp"
-
-    @remap_error
     def __init__(self, *,
                  checkpoint: Optional[str] = None, 
                  train_dataset: Optional[Dataset] = None,
                  config_overrides: Optional[dict] = None):
         self.checkpoint = Path(checkpoint) if checkpoint is not None else None
         self._train_transforms = None
-        self.testbed = None
-        self.n_steps = None
-        self.dataparser_params = None
         self.n_steps = 35_000
-        self.RenderMode = None
         self._config_overrides = None
         self._base_config = None
         self._loaded_step = None
@@ -228,17 +280,17 @@ class InstantNGP(Method):
 
     @classmethod
     def get_method_info(cls):
-        assert cls._method_name is not None, "Method was not properly registered"
         return MethodInfo(
-            name=cls._method_name,
+            method_id="",  # Will be set by the registry
             required_features=frozenset(("color",)), 
             supported_camera_models=frozenset(("pinhole", "opencv", "opencv_fisheye")),
-            supported_outputs=frozenset(("color", "accumulation")),
+            supported_outputs=("color", "accumulation"),
         )
 
     def get_info(self) -> ModelInfo:
         hparams = flatten_hparams(self._base_config or {}, separator=".")
-        hparams.update(self._config_overrides)
+        if self._config_overrides is not None:
+            hparams.update(self._config_overrides)
         return ModelInfo(
             num_iterations=self.n_steps, 
             loaded_step=self._loaded_step,
@@ -248,7 +300,8 @@ class InstantNGP(Method):
         )
 
     def _setup_testbed(self, config_overrides=None):
-        import pyngp as ngp  # Depends on GPU
+        # Importing pyngp triggers error when no GPU is available
+        import pyngp as ngp  # type: ignore
 
         self.RenderMode = ngp.RenderMode
         testbed = ngp.Testbed()
@@ -280,9 +333,14 @@ class InstantNGP(Method):
 
         self.testbed = testbed
         self._set_overrides()
+        self._train_params_backup = {
+            "snap_to_pixel_centers": self.testbed.snap_to_pixel_centers,
+            "render_min_transmittance": self.testbed.nerf.render_min_transmittance,
+        }
+        self._current_mode = True
 
     def _set_overrides(self):
-        import pyngp as ngp
+        import pyngp as ngp  # type: ignore
         def set_param(k, v):
             parts = k.split(".")
             testbedobj = self.testbed
@@ -303,17 +361,17 @@ class InstantNGP(Method):
         self.testbed.nerf.sharpen = 0.0
         self.testbed.nerf.render_with_lens_distortion = True
 
-        for k, v in self._config_overrides.items():
+        for k, v in (self._config_overrides or {}).items():
             set_param(k, v)
         print("Config overrides:")
-        pprint.pprint(self._config_overrides)
+        pprint.pprint(self._config_overrides or {})
 
         self.testbed.shall_train = True
 
 
     def _validate_config(self, train_dataset):
         # Verify blender config
-        if train_dataset["metadata"].get("name") == "blender":
+        if train_dataset["metadata"].get("id") == "blender":
             if self.testbed.color_space.name != "SRGB":
                 warnings.warn("Blender dataset is expected to have 'testbed.color_space=SRGB' in config_overrides.")
             if self.testbed.nerf.cone_angle_constant != 0:
@@ -361,17 +419,20 @@ class InstantNGP(Method):
                         if img.shape[2] < 4:
                             img = np.dstack((img, np.ones([img.shape[0], img.shape[1], 4 - img.shape[2]])))
                         with open(str(impath_target), "wb") as f:
-                            f.write(struct.pack("ii", img.shape[0], img.shape[1]))
+                            f.write(struct.pack("<ii", img.shape[0], img.shape[1]))
                             f.write(img.astype(np.float16).tobytes())
                     logging.debug(f"copied {impath_source} to {impath_target}")
                     copied += 1
                 progress.set_postfix(linked=linked, copied=copied)
                 if dataset["sampling_masks"] is not None:
+                    sampling_mask_paths = dataset.get("sampling_mask_paths", None)
+                    if sampling_mask_paths is None:
+                        dataset["sampling_mask_paths"] = sampling_mask_paths = [""] * len(dataset["image_paths"])
                     mask = dataset["sampling_masks"][i]
                     mask = Image.fromarray(mask[:height, :width], mode="L")
                     mask = ImageOps.invert(mask)
                     maskname = impath_target.with_name(f"dynamic_mask_{impath_target.name}")
-                    dataset["sampling_masks"][i] = maskname
+                    sampling_mask_paths[i] = str(maskname)
                     mask.save(str(maskname))
         dataset["image_paths_root"] = str(tmpdir)
 
@@ -398,7 +459,7 @@ class InstantNGP(Method):
             keep_coords = cast_value(bool, config_overrides.get("keep_coords", False))
             self.dataparser_params["aabb_scale"] = aabb_scale
             self.dataparser_params["keep_coords"] = keep_coords
-            self.dataparser_params["color_space"] = train_dataset["metadata"].get("color_space", "srgb")
+            self.dataparser_params["color_space"] = (train_dataset or {}).get("metadata", {}).get("color_space", "srgb")
 
         self._setup_testbed(config_overrides)
 
@@ -431,6 +492,7 @@ class InstantNGP(Method):
 
     def train_iteration(self, step: int):
         assert self._tempdir is not None, "Tempdir is not set"
+        self._set_mode_and_data(training=True)
         assert self.testbed.shall_train, "Training is disabled"
         current_frame = self.testbed.training_step
         if step < self.n_steps:
@@ -452,12 +514,14 @@ class InstantNGP(Method):
         }
 
     def save(self, path: str):
-        path: Path = Path(path)
-        path.mkdir(parents=True, exist_ok=True)
-        with (path / "meta.json").open("w") as f:
+        _path: Path = Path(path)
+        _path.mkdir(parents=True, exist_ok=True)
+        with (_path / "meta.json").open("w") as f:
             out = self.dataparser_params.copy()
-            out["dataparser_transform_base64"] = numpy_to_base64(out["dataparser_transform"])
-            out["dataparser_transform"] = out["dataparser_transform"].tolist()
+            dataparser_transform  = out.get("dataparser_transform")
+            assert dataparser_transform is not None, "dataparser_transform is None"
+            out["dataparser_transform_base64"] = numpy_to_base64(dataparser_transform)
+            out["dataparser_transform"] = dataparser_transform.tolist()
             json.dump(
                 {
                     "dataparser_params": out,
@@ -467,17 +531,17 @@ class InstantNGP(Method):
                 f,
                 indent=2,
             )
-        with (path / "base_config.json").open("w") as f:
+        with (_path / "base_config.json").open("w") as f:
             json.dump(self._base_config, f, indent=2)
-        with (path / "config_overrides.json").open("w") as f:
+        with (_path / "config_overrides.json").open("w") as f:
             json.dump(self._config_overrides, f, indent=2)
-        self.testbed.save_snapshot(str(path / "checkpoint.ingp"), False)
+        self.testbed.save_snapshot(str(_path / "checkpoint.ingp"), False)
 
         # In the ingp impl. there is a bug which clears the two following parameters on load
         # They have to be preserved in order to obtain consistent checkpoints.
         # m_nerf.training.counters_rgb.rays_per_batch = 1 << 12;
         # m_nerf.training.counters_rgb.measured_batch_size_before_compaction = 0;
-        with gzip.open(path / "checkpoint.ingp", "r") as f:
+        with gzip.open(_path / "checkpoint.ingp", "r") as f:
             checkpoint_data = msgpack.load(f)
 
             sha = hashlib.sha256()
@@ -500,114 +564,97 @@ class InstantNGP(Method):
             _update(checkpoint_data)
             sha = hashlib.sha256()
             pass
-        with (path / "checkpoint.ingp.sha256").open("w") as f:
+        with (_path / "checkpoint.ingp.sha256").open("w") as f:
             f.write(sha.hexdigest())
 
+    def _set_mode_and_data(self, training=True, camera=None):
+        if training and self._current_mode:
+            # Already in training mode
+            return
+        elif training:
+            # Switch back to training mode - we have to reload train transforms after
+            # it was replaced by eval mode.
+            data = self._train_params_backup
+            self.testbed.snap_to_pixel_centers = data["snap_to_pixel_centers"]
+            self.testbed.nerf.render_min_transmittance = data["render_min_transmittance"]
+            self.testbed.shall_train = True
+            if self._tempdir is not None:
+                with (Path(self._tempdir.name) / "transforms.json").open("w") as f:
+                    json.dump(self._train_transforms, f)
+                self.testbed.load_training_data(str(Path(self._tempdir.name) / "transforms.json"))
+        else:  # Eval mode
+            # Switch to eval mode and load the eval data
+            assert camera is not None, "Camera is required in eval mode"
+            camera = camera.item()
 
-    @contextlib.contextmanager
-    def _with_eval_setup(self, cameras: Cameras):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dataset: Dataset = dict(
-                points3D_xyz=None,
-                points3D_rgb=None,
-                images_points3D_indices=None,
-                cameras=cameras,
-                sampling_mask_paths=None,
-                sampling_mask_paths_root=None,
-                sampling_masks=None,
-                images=[np.zeros((h, w, 3), dtype=np.uint8) for w, h in cameras.image_sizes],
-                image_paths_root="eval",
-                image_paths=[f"eval/{i:06d}.png" for i in range(len(cameras.poses))],
-                metadata={
-                    "color_space": self.dataparser_params["color_space"],
-                }
-            )
-            self._write_images(dataset, tmpdir)
-            with (Path(tmpdir) / "transforms.json").open("w") as f:
-                json.dump(get_transforms(dataset, **self.dataparser_params)[0], f)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                w, h = camera.image_sizes
+                dataset: Dataset = Dataset(
+                    points3D_xyz=None,
+                    points3D_rgb=None,
+                    images_points3D_indices=None,
+                    cameras=camera[None],
+                    sampling_mask_paths=None,
+                    sampling_mask_paths_root=None,
+                    sampling_masks=None,
+                    images=[np.zeros((h, w, 3), dtype=np.uint8)],
+                    image_paths_root="eval",
+                    image_paths=[f"eval/{0:06d}.png"],
+                    metadata={
+                        "color_space": self.dataparser_params["color_space"],
+                    }
+                )
+                self._write_images(dataset, tmpdir)
+                with (Path(tmpdir) / "transforms.json").open("w") as f:
+                    json.dump(get_transforms(dataset, **self.dataparser_params)[0], f)
 
-            old_testbed_snap_to_pixel_centers = self.testbed.snap_to_pixel_centers
-            old_testbed_render_min_transmittance = self.testbed.nerf.render_min_transmittance
-            old_testbed_shall_train = self.testbed.shall_train
-            try:
-                self.testbed.load_training_data(str(Path(tmpdir) / "transforms.json"))
+                self.testbed.load_training_data(os.path.join(tmpdir, "transforms.json"))
 
-                # Prior nerf papers don't typically do multi-sample anti aliasing.
-                # So snap all pixels to the pixel centers.
-                self.testbed.snap_to_pixel_centers = True
+            # Prior nerf papers don't typically do multi-sample anti aliasing.
+            # So snap all pixels to the pixel centers.
+            self.testbed.snap_to_pixel_centers = True
 
-                self.testbed.nerf.render_min_transmittance = 1e-4
+            self.testbed.nerf.render_min_transmittance = 1e-4
 
-                self.testbed.shall_train = False
-                yield self.testbed
+            self.testbed.shall_train = False
 
-            finally:
-                self.testbed.snap_to_pixel_centers = old_testbed_snap_to_pixel_centers
-                self.testbed.nerf.render_min_transmittance = old_testbed_render_min_transmittance
-                self.testbed.shall_train = old_testbed_shall_train
-                if self._tempdir is not None:
-                    with (Path(self._tempdir.name) / "transforms.json").open("w") as f:
-                        json.dump(self._train_transforms, f)
-                    self.testbed.load_training_data(str(Path(self._tempdir.name) / "transforms.json"))
+        self._current_mode = training
 
-    def render(self, cameras: Cameras, *, embeddings=None, options=None) -> Iterable[RenderOutput]:
+    def render(self, camera: Cameras, *, options=None) -> RenderOutput:
         del options
-        if embeddings is not None:
-            raise NotImplementedError(f"Optimizing embeddings is not supported for method {self.get_method_info()['name']}")
-        with self._with_eval_setup(cameras) as testbed:
-            spp = 8
-            for i in range(testbed.nerf.training.dataset.n_images):
-                # print(testbed.nerf.training.dataset.metadata[i].resolution)
-                resolution = testbed.nerf.training.dataset.metadata[i].resolution
-                testbed.set_camera_to_training_view(i)
-                testbed.render_mode = self.RenderMode.Shade
-                image = np.copy(testbed.render(resolution[0], resolution[1], spp, True))
+        camera = camera.item()
+        self._set_mode_and_data(training=False, camera=camera)
+        assert self.testbed.nerf.training.dataset.n_images == 1, "Only one image is supported in eval mode"
 
-                # Unmultiply by alpha
-                image[..., 0:3] = np.divide(image[..., 0:3], image[..., 3:4], out=np.zeros_like(image[..., 0:3]), where=image[..., 3:4] != 0)
-                old_render_mode = testbed.render_mode
+        spp = 8
+        # print(testbed.nerf.training.dataset.metadata[i].resolution)
+        resolution = self.testbed.nerf.training.dataset.metadata[0].resolution
+        self.testbed.set_camera_to_training_view(0)
+        self.testbed.render_mode = self.RenderMode.Shade
+        image = self.testbed.render(resolution[0], resolution[1], spp, True)
 
-                ## testbed.render_mode = ngp.RenderMode.Depth
-                ## depth = np.copy(testbed.render(resolution[0], resolution[1], spp, True))
-                ## [ H, W, 4]
+        # Unmultiply by alpha
+        image[..., 0:3] = np.divide(image[..., 0:3], image[..., 3:4], out=np.zeros_like(image[..., 0:3]), where=image[..., 3:4] != 0)
 
-                # testbed.render_mode = ngp.RenderMode.Normals
-                # normals = testbed.render(resolution[0], resolution[1], spp, True)
-                testbed.render_mode = old_render_mode
+        # old_render_mode = self.testbed.render_mode
+        ## testbed.render_mode = ngp.RenderMode.Depth
+        ## depth = np.copy(testbed.render(resolution[0], resolution[1], spp, True))
+        ## [ H, W, 4]
 
-                # If input color was in sRGB, we map back to sRGB here
-                if self.dataparser_params["color_space"] == "srgb":
-                    image = linear_to_srgb(image)
-                yield {
-                    "color": image,
-                    ## "depth": depth,
-                    "accumulation": image[..., 3],
-                }
+        # testbed.render_mode = ngp.RenderMode.Normals
+        # normals = testbed.render(resolution[0], resolution[1], spp, True)
+        # self.testbed.render_mode = old_render_mode
+
+        # If input color was in sRGB, we map back to sRGB here
+        if self.dataparser_params["color_space"] == "srgb":
+            image = linear_to_srgb(image)
+        return {
+            "color": image,
+            ## "depth": depth,
+            "accumulation": image[..., 3],
+        }
 
     def close(self):
         if self._tempdir is not None:
             self._tempdir.cleanup()
             self._tempdir = None
-
-    def optimize_embeddings(
-        self, 
-        dataset: Dataset,
-        embeddings: Optional[Sequence[np.ndarray]] = None
-    ) -> Iterable[OptimizeEmbeddingsOutput]:
-        """
-        Optimize embeddings for each image in the dataset.
-
-        Args:
-            dataset: Dataset.
-            embeddings: Optional initial embeddings.
-        """
-        raise NotImplementedError()
-
-    def get_train_embedding(self, index: int) -> Optional[np.ndarray]:
-        """
-        Get the embedding for a training image.
-
-        Args:
-            index: Index of the image.
-        """
-        return None

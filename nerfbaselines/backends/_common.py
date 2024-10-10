@@ -1,23 +1,22 @@
+import os
+import functools
+import sys
+import re
 from collections import deque
-from functools import wraps
-import inspect
 import threading
-import types
-from functools import partial
 import importlib
 from pathlib import Path
-import subprocess
+import shutil
 from typing import Optional
-from typing import  Union, Set, Callable, TYPE_CHECKING, List, cast
+from typing import  Union, Set, Callable, List, cast, Dict, Any, Tuple
 from typing import Sequence
-from ..utils import CancellationToken, cancellable
-from ..types import Method, Literal, get_args
-if TYPE_CHECKING:
-    from ..registry import MethodSpec
+from nerfbaselines import BackendName, MethodSpec
+from nerfbaselines._constants import WEBPAGE_URL
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
 
-
-BackendName = Literal["conda", "docker", "apptainer", "python"]
-ALL_BACKENDS = list(get_args(BackendName))
 
 _mounted_paths = {}
 _forwarded_ports = {}
@@ -36,6 +35,7 @@ def mount(ps: Union[str, Path], pd: Union[str, Path]):
         def __enter__(self):
             return self
         def __exit__(self, *args):
+            del args
             if tid in _mounted_paths and dest in _mounted_paths[tid]:
                 _mounted_paths[tid].pop(dest)
             if tid in _mounted_paths and not _mounted_paths[tid]:
@@ -62,6 +62,7 @@ def forward_port(ps: int, pd: int):
         def __enter__(self):
             return self
         def __exit__(self, *args):
+            del args
             if tid in _forwarded_ports and pd in _forwarded_ports[tid]:
                 _forwarded_ports[tid].pop(pd)
             if tid in _forwarded_ports and not _forwarded_ports[tid]:
@@ -77,7 +78,32 @@ def get_forwarded_ports():
     return out
 
 
-def _get_implemented_backends(method_spec: 'MethodSpec') -> Sequence[BackendName]:
+@functools.lru_cache(maxsize=None)
+def _is_backend_available(backend: BackendName) -> bool:
+    """
+    Tests if the backend is available on the current platform. 
+    On Linux, the supported backends can be any of "conda", "docker", "apptainer", "python", 
+    depending on which ones are installed. 
+    On Windows or MacOS, "conda" is not supported.
+
+    Returns:
+        bool: True if the backend is available
+    """
+    if backend == "python":
+        return True
+    if sys.platform == "darwin" and backend == "conda":
+        # Conda cannot be supported because it needs CUDA
+        # Apptainer
+        return False
+    if os.name == "nt" and backend == "conda":
+        # Conda is not supported directly on Windows.
+        # It is only supported through WSL2.
+        # The bridge is not maintained in NerfBaselines
+        return False
+    return shutil.which(backend) is not None
+
+
+def get_implemented_backends(method_spec: 'MethodSpec') -> Sequence[BackendName]:
     from ._apptainer import get_apptainer_spec
     from ._docker import get_docker_spec
 
@@ -99,34 +125,20 @@ def _get_implemented_backends(method_spec: 'MethodSpec') -> Sequence[BackendName
 
 
 def _get_default_backend(implemented_backends: Sequence[BackendName]) -> BackendName:
-    should_install = []
     for backend in implemented_backends:
-        if backend not in implemented_backends:
-            continue
-        if backend == "python":
-            return "python"
-        try:
-            if backend == "conda":
-                test_args = ["conda", "--version"]
-            elif backend == "docker":
-                test_args = ["docker", "-v"]
-            elif backend == "apptainer":
-                test_args = ["apptainer", "-v"]
-            else:
-                raise ValueError(f"Unknown backend {backend}")
-            ret = subprocess.run(test_args, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if ret.returncode == 0:
-                return backend
-        except FileNotFoundError:
-            pass
-            should_install.append(backend)
-    raise RuntimeError("No backend available, please install " + " or ".join(should_install))
+        if _is_backend_available(backend):
+            return backend
+    backends_to_install = [x for x in implemented_backends if _is_backend_available(x) and x != "python"]
+    raise RuntimeError("No backend available, please install " + " or ".join(backends_to_install))
 
 
 def get_backend(method_spec: "MethodSpec", backend: Optional[str]) -> 'Backend':
-    implemented_backends = _get_implemented_backends(method_spec)
+    implemented_backends = get_implemented_backends(method_spec)
     if backend is None:
-        backend = _get_default_backend(implemented_backends)
+        backend = _get_default_backend([x for x in implemented_backends if x != "python"])
+    elif not _is_backend_available(backend):
+        raise RuntimeError(f"Backend {backend} is not available on this platform. "
+            f"Please follow the installation instructions on {WEBPAGE_URL}/docs/.")
     elif backend not in implemented_backends:
         raise RuntimeError(f"Backend {backend} is not implemented for selected method.\nImplemented backends: {','.join(implemented_backends)}")
 
@@ -170,7 +182,8 @@ class Backend(metaclass=_BackendMeta):
         _active_backend[tid].append(self)
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        del exc_type, exc_val, exc_tb
         tid = threading.get_ident()
         if tid in _active_backend and _active_backend[tid]:
             _active_backend[tid].pop()
@@ -180,25 +193,20 @@ class Backend(metaclass=_BackendMeta):
     def install(self):
         pass
 
-    def shell(self):
+    def shell(self, args: Optional[Tuple[str, ...]] = None):
+        del args
         raise NotImplementedError("shell not implemented")
 
-    def wrap(self, function: Union[str, Callable], spec=None):
-        return wrap_with_backend(self, function, spec=spec)
-
     def static_call(self, function: str, *args, **kwargs):
+        del function, args, kwargs
         raise NotImplementedError("static_call not implemented")
 
-    def static_getattr(self, attr: str):
-        raise NotImplementedError("static_getattr not implemented")
-
     def instance_call(self, instance: int, method: str, *args, **kwargs):
+        del instance, method, args, kwargs
         raise NotImplementedError("instance_call not implemented")
 
-    def instance_getattr(self, instance: int, attr: str):
-        raise NotImplementedError("instance_getattr not implemented")
-
     def instance_del(self, instance: int):
+        del instance
         raise NotImplementedError("instance_del not implemented")
 
 
@@ -208,82 +216,120 @@ class SimpleBackend(Backend):
     def __init__(self):
         self._instances = {}
 
-    def static_getattr(self, attr: str):
-        obj, attrname = attr.split(":", 1)
-        obj = importlib.import_module(obj)
-        for part in attrname.split("."):
-            obj = getattr(obj, part)
-        return obj
-
     def static_call(self, function: str, *args, **kwargs):
         fn, fnname = function.split(":", 1)
         fn = importlib.import_module(fn)
         for part in fnname.split("."):
             fn = getattr(fn, part)
         fn = cast(Callable, getattr(fn, "__run_on_host_original__", fn))
-        if CancellationToken.current is not None:
-            fn = cancellable(fn, cancellation_token=CancellationToken.current)
         return fn(*args, **kwargs)
 
     def instance_call(self, instance: int, method: str, *args, **kwargs):
         instance = self._instances[instance]
         fn = getattr(instance, method)
-        if CancellationToken.current is not None:
-            fn = cancellable(fn, cancellation_token=CancellationToken.current)
         return fn(*args, **kwargs)
-
-    def instance_getattr(self, instance: int, attr: str):
-        instance = self._instances[instance]
-        return getattr(instance, attr)
 
     def instance_del(self, instance: int):
         del self._instances[instance]
 
 
-def wrap_with_backend(backend: 'Backend', cls, spec=None):
-    if inspect.isfunction(spec or cls):
-        if spec is None:
-            path = f'{cls.__module__}:{cls.__name__}'
-        else:
-            path = cls
+def get_package_dependencies(extra=None, ignore: Optional[Set[str]] = None, ignore_viewer: bool = False):
+    assert __package__ is not None, "Package must be set"
+    if sys.version_info < (3, 10):
+        from importlib_metadata import distribution
+        import importlib_metadata
+    else:
+        from importlib import metadata as importlib_metadata
+        from importlib.metadata import distribution
 
-        @wraps(cls)
-        def inner(*args, **kwargs):
-            return backend.static_call(path, *args, **kwargs)
-        return inner
+    requires = set()
+    requires_with_conditions = None
+    try:
+        requires_with_conditions = distribution("nerfbaselines").requires
+    except importlib_metadata.PackageNotFoundError:
+        # Package not installed
+        pass
+    for r in (requires_with_conditions or ()):
+        if ";" in r:
+            r, condition = r.split(";")
+            r = r.strip().replace(" ", "")
+            condition = condition.strip().replace(" ", "")
+            if condition.startswith("extra=="):
+                extracond = condition.split("==")[1][1:-1]
+                if extra is not None and extracond in extra:
+                    requires.add(r)
+                continue
+            elif condition.startswith("python_version"):
+                requires.add(r)
+                continue
+            else:
+                raise ValueError(f"Unknown condition {condition}")
+        r = r.strip().replace(" ", "")
+        requires.add(r)
+    if ignore_viewer:
+        # NOTE: Viewer is included in the package by default
+        # See https://github.com/pypa/setuptools/pull/1503
+        ignore = set(ignore or ())
+        ignore.add("viser")
 
-    if inspect.isclass(spec or cls):
-        if spec is None:
-            path = f'{cls.__module__}:{cls.__name__}'
-            bases = tuple(x for x in inspect.getmro(cls) if (
-                x.__module__ in ("builtins", Method.__module__)
-            ))
-        else:
-            path = cls
-            bases = (spec,)
-            cls = spec
+    if ignore is not None:
+        ignore = set(x.lower() for x in ignore)
+        for r in list(requires):
+            rsimple = re.sub(r"[^a-zA-Z0-9_-].*", "", r).lower()
+            if rsimple in ignore:
+                requires.remove(r)
+    return sorted(requires)
 
-        members = dict(inspect.getmembers(cls))
 
-        ns = {}
-        def partialproperty(k):
-            return property(lambda *_: backend.static_getattr(f'{path}.{k}'))
+def run_on_host():
+    def wrap(fn):
+        @functools.wraps(fn)
+        def wrapped(*args, **kwargs):
+            if Backend.current is not None:
+                return Backend.current.static_call(f"{fn.__module__}:{fn.__name__}", *args, **kwargs)
+            return fn(*args, **kwargs)
+        wrapped.__run_on_host_original__ = fn  # type: ignore
+        return wrapped
+    return wrap
 
-        for k, member in members.items():
-            if isinstance(member, classmethod):
-                ns[k] = classmethod(partial(backend.static_getattr, f'{path}.{k}'))  # type: ignore
-            elif callable(member):
-                ns[k] = staticmethod(partial(backend.static_call, f'{path}.{k}'))  # type: ignore
-            elif isinstance(member, property):
-                ns[k] = partialproperty(k)
-        ns.pop("__init__", None)
-        ns.pop("__getattribute__", None)
-        ns.pop("__getattr__", None)
-        ns.pop("__setattr__", None)
-        repr_str = f"<VirtualClass {cls}>"
-        ns["__new__"] = lambda _cls, *args, **kwargs: backend.static_call(path, *args, **kwargs)
-        ns["__repr__"] = lambda x: repr_str
-        ns["__str__"] = lambda x: repr_str
-        return types.new_class("VirtualInstanceWrapper", bases, {}, exec_body=lambda _ns: _ns.update(ns))
-    
-    raise ValueError(f"Unsupported type {cls}")
+
+def setup_logging(verbose: Union[bool, Literal['disabled']]):
+    import logging
+
+    class Formatter(logging.Formatter):
+        def format(self, record: logging.LogRecord):
+            levelname = record.levelname[0]
+            message = record.getMessage()
+            if levelname == "D":
+                return f"\033[0;36mdebug:\033[0m {message}"
+            elif levelname == "I":
+                return f"\033[1;36minfo:\033[0m {message}"
+            elif levelname == "W":
+                return f"\033[0;1;33mwarning: {message}\033[0m"
+            elif levelname == "E":
+                return f"\033[0;1;31merror: {message}\033[0m"
+            else:
+                return message
+
+    kwargs: Dict[str, Any] = {}
+    if sys.version_info >= (3, 8):
+        kwargs["force"] = True
+    if verbose == "disabled":
+        logging.basicConfig(level=logging.FATAL, **kwargs)
+        logging.getLogger('PIL').setLevel(logging.FATAL)
+        try:
+            import tqdm as _tqdm
+            old_init = _tqdm.tqdm.__init__
+            _tqdm.tqdm.__init__ = lambda *args, disable=None, **kwargs: old_init(*args, disable=True, **kwargs)
+        except ImportError:
+            pass
+    elif verbose:
+        logging.basicConfig(level=logging.DEBUG, **kwargs)
+        logging.getLogger('PIL').setLevel(logging.WARNING)
+    else:
+        import warnings
+        logging.basicConfig(level=logging.INFO, **kwargs)
+        warnings.formatwarning = lambda message, *args, **kwargs: message
+    for handler in logging.root.handlers:
+        handler.setFormatter(Formatter())
+    logging.captureWarnings(True)

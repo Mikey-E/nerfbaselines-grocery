@@ -1,9 +1,17 @@
 import sys
-from typing import Tuple, Dict, cast, Any, TYPE_CHECKING
+from typing import Tuple, Dict, cast, Any, TYPE_CHECKING, Optional
 import numpy as np
-from .utils import padded_stack, is_broadcastable, convert_image_dtype
-from .types import Protocol, runtime_checkable, CameraModel, camera_model_to_int
-from .types import Cameras, GenericCameras, TTensor, _get_xnp
+from .utils import padded_stack, convert_image_dtype
+from . import CameraModel, camera_model_to_int, Cameras, GenericCameras
+from ._types import Cameras, GenericCameras, TTensor, _get_xnp
+try:
+    from typing import Protocol
+except ImportError:
+    from typing_extensions import Protocol
+try:
+    from typing import runtime_checkable
+except ImportError:
+    from typing_extensions import runtime_checkable
 
 
 def _xnp_astype(tensor: TTensor, dtype, xnp: Any) -> TTensor:
@@ -16,6 +24,17 @@ def _xnp_copy(tensor: TTensor, xnp: Any = np) -> TTensor:
     if xnp.__name__ == "torch":
         return tensor.clone()  # type: ignore
     return xnp.copy(tensor)  # type: ignore
+
+
+def _is_broadcastable(shape1, shape2):
+    for a, b in zip(shape1[::-1], shape2[::-1]):
+        if a == 1 or b == 1 or a == b:
+            pass
+        else:
+            return False
+    return True
+
+
 
 
 @runtime_checkable
@@ -185,22 +204,22 @@ _DISTORTIONS: Dict[CameraModel, _DistortionFunction] = {
 }
 
 
-def _distort(camera_types, distortion_params, uv, xnp: Any = np):
+def _distort(camera_models, distortion_params, uv, xnp: Any = np):
     """
     Distorts OpenCV points according to the distortion parameters.
 
     Args:
-        camera_types: [batch]
+        camera_models: [batch]
         distortion_params: [batch, num_params]
         uv: [batch, ..., 2]
         xnp: The numpy module to use.
     """
-    pinhole_mask = camera_types == camera_model_to_int("pinhole")
+    pinhole_mask = camera_models == camera_model_to_int("pinhole")
     if xnp.all(pinhole_mask):
         return uv
     out = None
     for cam, distortion in _DISTORTIONS.items():
-        mask = camera_types == camera_model_to_int(cam)
+        mask = camera_models == camera_model_to_int(cam)
         if xnp.any(mask):
             if xnp.all(mask):
                 return uv + distortion(distortion_params, uv, xnp=xnp)
@@ -213,40 +232,70 @@ def _distort(camera_types, distortion_params, uv, xnp: Any = np):
     return out
 
 
-def _undistort(camera_types: TTensor, distortion_params: TTensor, uv: TTensor, xnp: Any = np, **kwargs) -> TTensor:
-    pinhole_mask = camera_types == camera_model_to_int("pinhole")
+def _undistort(camera_models: TTensor, distortion_params: TTensor, uv: TTensor, xnp: Any = np, **kwargs) -> TTensor:
+    pinhole_mask = camera_models == camera_model_to_int("pinhole")
     if xnp.all(pinhole_mask):
         return uv
-    out = None
+    out: Optional[TTensor] = None
     for cam, distortion in _DISTORTIONS.items():
-        mask = camera_types == camera_model_to_int(cam)
+        mask = camera_models == camera_model_to_int(cam)
         if xnp.any(mask):
             if xnp.all(mask):
                 return _iterative_undistortion(distortion, uv, distortion_params, xnp=xnp, **kwargs)
             else:
-                if out is None:
-                    out = _xnp_copy(uv, xnp=xnp)
-                out[mask] = cast(TTensor, _iterative_undistortion(distortion, uv[mask], distortion_params[mask], xnp=xnp, **kwargs))
+                out_update = cast(TTensor, _iterative_undistortion(distortion, uv[mask], distortion_params[mask], xnp=xnp, **kwargs))  # type: ignore
+                if xnp.__name__.startswith("jax"):
+                    _old_out = uv if out is None else out
+                    _old_out.at[mask].set(out_update)  # type: ignore
+                else:
+                    if out is None:
+                        out = _xnp_copy(uv, xnp=xnp)
+                    out[mask] = out_update  # type: ignore
     if out is None:
         out = uv
     return out
 
 
 def get_image_pixels(image_sizes: TTensor) -> TTensor:
+    """
+    Get the pixel coordinates of all pixels of an image.
+    The output is flattened array of all pixel coordinates in all images (shape [num_pixels, 2]).
+
+    Args:
+        image_sizes: [batch..., 2]
+
+    Returns:
+        Coordinates (x,y) in flattened format [num_pixels, 2]
+    """
     xnp = _get_xnp(image_sizes)
-    options = {}
+    options = dict(dtype=image_sizes.dtype)
     if len(image_sizes.shape) == 1:
         w, h = image_sizes
         if xnp.__name__ == "torch" and not TYPE_CHECKING:
-            options = {"device": image_sizes.device}
+            options = {**options, "device": image_sizes.device}
         return xnp.stack(xnp.meshgrid(xnp.arange(w, **options), xnp.arange(h, **options), indexing="xy"), -1).reshape(-1, 2)
     return xnp.concatenate([get_image_pixels(s) for s in image_sizes])
 
 
 def get_rays(cameras: GenericCameras[TTensor], xy: TTensor) -> Tuple[TTensor, TTensor]:
+    """
+    Gets correctly projected rays from pixel coordinates. This function is useful for raymarching.
+    The function is similar to `unproject` but it offsets the pixel coordinates by 0.5 to get the center of the pixel.
+    The shape of the output rays is the broadcasted shape of the input pixel coordinates and the camera poses:
+
+    * For cameras and xy shapes () and (N, 2), the outputs shapes are (N, 3).
+    * For cameras and xy shapes (N) and (N, 2), the outputs shapes are (N, 3).
+    * For cameras and xy shapes (B..., N) and (B..., N, 2), the outputs shapes are (B..., N, 3).
+
+    Args:
+        cameras: Cameras
+        xy: Pixel coordinates
+
+    Returns:
+        A tuple of ray origins and ray directions.
+    """
     xnp = _get_xnp(xy)
     assert xy.shape[-1] == 2
-    assert xy.shape[0] == len(cameras)
     kind = getattr(xy.dtype, "kind", None)
     if kind is not None:
         assert kind in {"i", "u"}, "xy must be integer"
@@ -256,38 +305,73 @@ def get_rays(cameras: GenericCameras[TTensor], xy: TTensor) -> Tuple[TTensor, TT
 
 
 def unproject(cameras: GenericCameras[TTensor], xy: TTensor) -> Tuple[TTensor, TTensor]:
+    """
+    Unproject pixel coordinates to rays in world coordinates.
+    The shape of the output rays is the broadcasted shape of the input pixel coordinates and the camera poses:
+
+    * For cameras and xy shapes () and (N, 2), the outputs shapes are (N, 3).
+    * For cameras and xy shapes (N) and (N, 2), the outputs shapes are (N, 3).
+    * For cameras and xy shapes (B..., N) and (B..., N, 2), the outputs shapes are (B..., N, 3).
+
+    Args:
+        cameras: Cameras
+        xy: Pixel coordinates
+
+    Returns:
+        A tuple of ray origins and ray directions.
+    """
     xnp = _get_xnp(xy)
     assert xy.shape[-1] == 2
-    assert is_broadcastable(xy.shape[:-1], cameras.poses.shape[:-2]), \
+    assert _is_broadcastable(xy.shape[:-1], cameras.poses.shape[:-2]), \
         "xy must be broadcastable with poses, shapes: {}, {}".format(xy.shape[:-1], cameras.poses.shape[:-2])
     if hasattr(xy.dtype, "kind"):
         if not TYPE_CHECKING:
             assert xy.dtype.kind == "f"
+    intrinsics = cameras.intrinsics
+    distortion_parameters = cameras.distortion_parameters
+    camera_models = cameras.camera_models
+    poses = cameras.poses
+
     fx: TTensor
     fy: TTensor
     cx: TTensor
     cy: TTensor
-    fx, fy, cx, cy = xnp.moveaxis(cameras.intrinsics, -1, 0)
+    fx, fy, cx, cy = xnp.moveaxis(intrinsics, -1, 0)
     x = xy[..., 0]
     y = xy[..., 1]
     u = (x - cx) / fx
     v = (y - cy) / fy
 
     uv = xnp.stack((u, v), -1)
-    uv = _undistort(cameras.camera_types, cameras.distortion_parameters, uv, xnp=xnp)
+    uv = _undistort(camera_models, distortion_parameters, uv, xnp=xnp)
     directions = xnp.concatenate((uv, xnp.ones_like(uv[..., :1])), -1)
 
-    rotation = cameras.poses[..., :3, :3]  # (..., 3, 3)
+    rotation = poses[..., :3, :3]  # (..., 3, 3)
     directions = (directions[..., None, :] * rotation).sum(-1)
-    origins = xnp.broadcast_to(cameras.poses[..., :3, 3], directions.shape)
+    origins = xnp.broadcast_to(poses[..., :3, 3], directions.shape)
     return origins, directions
 
 
 def project(cameras: GenericCameras[TTensor], xyz: TTensor) -> TTensor:
+    """
+    Project 3D points to pixel coordinates.
+    The shape of the output pixel coordinates is the broadcasted shape of the input 3D points and the camera poses:
+
+    * For cameras and xyz shapes () and (N, 3), the output has shape (N, 2).
+    * For cameras and xyz shapes (N) and (N, 3), the output has shape (N, 2).
+    * For cameras and xyz shapes (B..., N) and (B..., N, 3), the output has shape (B..., N, 2).
+
+    Args:
+        cameras: Cameras
+        xyz: 3D points
+
+    Returns:
+        Pixel coordinates
+    """
     xnp = _get_xnp(xyz)
     eps = xnp.finfo(xyz.dtype).eps  # type: ignore
     assert xyz.shape[-1] == 3
-    assert is_broadcastable(xyz.shape[:-1], cameras.poses.shape[:-2]), \
+    assert _is_broadcastable(xyz.shape[:-1], cameras.poses.shape[:-2]), \
         "xyz must be broadcastable with poses, shapes: {}, {}".format(xyz.shape[:-1], cameras.poses.shape[:-2])
 
     # World -> Camera
@@ -300,7 +384,7 @@ def project(cameras: GenericCameras[TTensor], xyz: TTensor) -> TTensor:
     # Camera -> Camera distorted
     uv = xnp.where(uvw[..., 2:] > eps, uvw[..., :2] / uvw[..., 2:], xnp.zeros_like(uvw[..., :2]))
 
-    uv = _distort(cameras.camera_types, cameras.distortion_parameters, uv, xnp=xnp)
+    uv = _distort(cameras.camera_models, cameras.distortion_parameters, uv, xnp=xnp)
     x, y = xnp.moveaxis(uv, -1, 0)
 
     # Transform to image coordinates
@@ -312,6 +396,16 @@ def project(cameras: GenericCameras[TTensor], xyz: TTensor) -> TTensor:
 
 
 def interpolate_bilinear(image: TTensor, xy: TTensor) -> TTensor:
+    """
+    Interpolates an image at pixel coordinates using bilinear interpolation.
+
+    Args:
+        image: Image tensor [H, W, C]
+        xy: Pixel coordinates [H, W, 2]
+    Returns:
+        Interpolated image [H, W, C]
+    """
+
     xnp = _get_xnp(image)
     if xnp.__name__ == "torch":
         if not sys.modules["torch"].is_floating_point(xy):
@@ -370,6 +464,18 @@ def interpolate_bilinear(image: TTensor, xy: TTensor) -> TTensor:
 def warp_image_between_cameras(cameras1: GenericCameras[np.ndarray], 
                                cameras2: GenericCameras[np.ndarray],
                                images: np.ndarray):
+    """
+    Warp an image from cameras1 to cameras2 by mapping pixels from cameras2 to cameras1.
+
+    Args:
+        cameras1: Cameras
+        cameras2: Cameras
+        images: Images tensor
+    
+    Returns:
+        Warped images
+    """
+
     xnp = _get_xnp(images)
     assert cameras1.image_sizes is not None, "cameras1 must have image sizes"
     assert cameras2.image_sizes is not None, "cameras2 must have image sizes"
@@ -397,12 +503,19 @@ def warp_image_between_cameras(cameras1: GenericCameras[np.ndarray],
 
     w, h = cam2.image_sizes
     xy = get_image_pixels(cam2.image_sizes)
-    xy = xy.astype(xnp.float32) + 0.5
 
     # Camera models assume that the upper left pixel center is (0.5, 0.5).
+    xy = xy.astype(xnp.float32) + 0.5
+
+    # Replace poses with empty poses
     empty_poses = xnp.eye(4, dtype=cam2.poses.dtype)[:3, :4]
-    _, cam_point = unproject(cam2.replace(poses=empty_poses)[None], xy)
-    source_point = project(cam1.replace(poses=empty_poses)[None], cam_point)
+    cam2 = cam2.replace(poses=empty_poses)
+    cam1 = cam1.replace(poses=empty_poses)
+    
+    # Unproject and reproject back
+    _, cam_point = unproject(cam2[None], xy)
+    source_point = project(cam1[None], cam_point)
+
     # Undo 0.5 offset
     source_point -= 0.5
 
@@ -418,11 +531,20 @@ def warp_image_between_cameras(cameras1: GenericCameras[np.ndarray],
 
 
 def undistort_camera(camera: Cameras):
+    """
+    Undistort cameras.
+
+    Args:
+        camera: Cameras
+    
+    Returns:
+        Pinhole cameras
+    """
     assert camera.image_sizes is not None, "Camera must have image sizes"
     # xnp = _get_xnp(camera.image_sizes)
     original_camera = camera
 
-    mask = camera.camera_types != camera_model_to_int("pinhole")
+    mask = camera.camera_models != camera_model_to_int("pinhole")
     if not np.any(mask):
         return camera
 
@@ -435,7 +557,7 @@ def undistort_camera(camera: Cameras):
     # Scale the image such the the boundary of the undistorted image.
     empty_poses = np.eye(4, dtype=camera.poses.dtype)[None].repeat(len(camera), axis=0)[..., :3, :4]
     camera_empty = camera.replace(poses=empty_poses)
-    camera_empty_undistorted = camera.replace(poses=empty_poses, camera_types=np.zeros_like(camera.camera_types), distortion_parameters=np.zeros_like(camera.distortion_parameters))
+    camera_empty_undistorted = camera.replace(poses=empty_poses, camera_models=np.zeros_like(camera.camera_models), distortion_parameters=np.zeros_like(camera.distortion_parameters))
     assert len(camera_empty) == len(camera)
 
     # Determine min/max coordinates along top / bottom image border.
@@ -515,7 +637,7 @@ def undistort_camera(camera: Cameras):
 
     out = vars(original_camera)
     out.update(dict(
-        camera_types=np.full_like(original_camera.camera_types, camera_model_to_int("pinhole")),
+        camera_models=np.full_like(original_camera.camera_models, camera_model_to_int("pinhole")),
         distortion_parameters=np.zeros_like(original_camera.distortion_parameters),
         intrinsics=intrinsics,
         image_sizes=image_sizes,

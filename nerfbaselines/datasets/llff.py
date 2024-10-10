@@ -1,38 +1,30 @@
-import hashlib
-import shutil
-import os
-import tempfile
-import zipfile
 import logging
-import sys
 from typing import Union
 from pathlib import Path
 import numpy as np
-from ..types import camera_model_to_int, new_cameras
-from ._common import DatasetNotFoundError, new_dataset
+from nerfbaselines import camera_model_to_int, new_cameras, DatasetNotFoundError, new_dataset
+from ._common import download_dataset_wrapper, download_archive_dataset
+from nerfbaselines._constants import DATASETS_REPOSITORY
 
 
-gdrive_id = "16VnMcF1KJYxN9QId6TClMsZRahHNMW5g"
-LLFF_SCENES = "fern flower fortress horns leaves orchids room trex".split()
+SCENES = "fern flower fortress horns leaves orchids room trex".split()
+DATASET_NAME = "llff"
 
 
-def load_llff_dataset(path: Union[Path, str], split: str, downscale_factor: int = 4, **_):
+def load_llff_dataset(path: Union[Path, str], split: str, *, downscale_factor: int = 4, **_):
     assert isinstance(path, (Path, str)), "path must be a pathlib.Path or str"
     path = Path(path)
 
     hold_every: int = 8
-    scene = path.name
-    if scene not in LLFF_SCENES:
-        raise DatasetNotFoundError(f"Scene {scene} not found in LLFF dataset. Supported scenes: {LLFF_SCENES}.")
-    for file in ("poses_bounds.npy", "simplices.npy", "sparse", "trimesh.png", "database.db", "images", "images_4", "images_8"):
+    for file in ("poses_bounds.npy", "sparse", "database.db", "images", "images_4", "images_8"):
         if not (path / file).exists():
             raise DatasetNotFoundError(f"Path {path} does not contain a LLFF dataset. Missing file: {path / file}")
     assert split in ["train", "test"], "split must be one of 'train', 'test'"
 
     poses_bounds = np.load(path / "poses_bounds.npy")
-    image_paths = sorted(path.glob(f"images_{downscale_factor}/*"))
+    image_paths = sorted(path.glob(f"images_{downscale_factor}/*.png"))
     assert len(image_paths) > 0, f"No images found in {path / f'images_{downscale_factor}'}"
-    assert len(poses_bounds) == len(image_paths), "Mismatch between number of images and number of poses! Please rerun COLMAP!"
+    assert len(poses_bounds) == len(image_paths), f"Mismatch between number of images ({len(image_paths)}) and number of poses ({len(poses_bounds)})!"
 
     poses = poses_bounds[:, :15].reshape(-1, 3, 5)  # (N_images, 3, 5)
     near_fars = poses_bounds[:, -2:]  # (N_images, 2)
@@ -64,7 +56,7 @@ def load_llff_dataset(path: Union[Path, str], split: str, downscale_factor: int 
         cameras=new_cameras(
             poses=c2w,
             intrinsics=(intrinsics)[indices],
-            camera_types=np.full(len(indices), camera_model_to_int("pinhole"), dtype=np.int32),
+            camera_models=np.full(len(indices), camera_model_to_int("pinhole"), dtype=np.int32),
             distortion_parameters=np.zeros((len(indices), 0), dtype=np.float32),
             image_sizes=img_wh.T[indices],
             nears_fars=near_fars[indices],
@@ -74,65 +66,34 @@ def load_llff_dataset(path: Union[Path, str], split: str, downscale_factor: int 
         sampling_mask_paths=None,
         sampling_mask_paths_root=None,
         metadata={
-            "name": "llff",
-            "scene": scene,
             "downscale_factor": downscale_factor,
             "color_space": "srgb",
+            "type": "forward-facing",
             "evaluation_protocol": "nerf",
             "expected_scene_scale": 0.5,
-            "type": "forward-facing",
         },
     )
 
 
-def download_llff_dataset(path: str, output: Union[Path, str]):
-    output = Path(output)
-    if path == "llff":
-        extract_prefix = "nerf_llff_data/"
-    elif path.startswith("llff/") and len(path) > len("llff/"):
-        scene_name = path[len("llff/") :]
-        if scene_name not in LLFF_SCENES:
-            raise DatasetNotFoundError(f"Scene {scene_name} not found in LLFF dataset. Supported scenes: {LLFF_SCENES}.")
-        extract_prefix = f"nerf_llff_data/{scene_name}/"
-    else:
-        raise DatasetNotFoundError(f"Dataset path must be equal to 'llff' or must start with 'llff/'. It was {path}")
-
-    file_sha256 = "5794b432feaf4f25bcd603addc6ad0270cec588fed6a364b7952001f07466635"
-    try:
-        import gdown
-    except ImportError:
-        logging.fatal("Please install gdown: pip install gdown")
-        sys.exit(2)
-
-    url = f"https://drive.google.com/uc?id={gdrive_id}"
-    output_tmp = str(output) + ".tmp"
-    if os.path.exists(output_tmp):
-        shutil.rmtree(output_tmp)
-    os.makedirs(output_tmp)
-    has_member = False
-    with tempfile.TemporaryDirectory() as tmpdir:
-        gdown.download(url, output=tmpdir + "/llff_data.zip")
-
-        # Verify hash
-        with open(tmpdir + "/llff_data.zip", "rb") as f:
-            hasher = hashlib.sha256()
-            for blk in iter(lambda: f.read(4096), b""):
-                hasher.update(blk)
-            if hasher.hexdigest() != file_sha256:
-                raise RuntimeError(f"Hash of {tmpdir + '/llff_data.zip'} ({hasher.hexdigest()}) does not match {file_sha256}")
-
-        # Extract files
-        logging.info("LLFF dataset downloaded and verified")
-        logging.info(f"Extracting LLFF dataset: {tmpdir + '/llff_data.zip'}")
-        with zipfile.ZipFile(tmpdir + "/llff_data.zip", "r") as zip_ref:
-            for member in zip_ref.infolist():
-                if member.filename.startswith(extract_prefix) and len(member.filename) > len(extract_prefix):
-                    member.filename = member.filename[len(extract_prefix) :]
-                    zip_ref.extract(member, output_tmp)
-                    has_member = True
-    if not has_member:
-        raise RuntimeError(f"Path {path} not found in LLFF dataset.")
-    if os.path.exists(str(output)):
-        shutil.rmtree(str(output))
-    os.rename(str(output) + ".tmp", str(output))
+@download_dataset_wrapper(SCENES, DATASET_NAME)
+def download_llff_dataset(path: str, output: str) -> None:
+    dataset_name, scene = path.split("/", 1)
+    if scene not in SCENES:
+        raise RuntimeError(f"Unknown scene {scene}, supported scenes: {SCENES}")
+    url = f"https://{DATASETS_REPOSITORY}/resolve/main/llff/{{scene}}.zip".format(scene=scene)
+    extract_prefix = f"{scene}/"
+    nb_info = {
+        "id": dataset_name,
+        "scene": scene,
+        "loader": load_llff_dataset.__module__ + ":" + load_llff_dataset.__name__,
+        "evaluation_protocol": "nerf",
+        "type": "forward-facing",
+    }
+    download_archive_dataset(url, output, 
+                             archive_prefix=extract_prefix, 
+                             nb_info=nb_info,
+                             file_type="zip")
     logging.info(f"Downloaded {path} to {output}")
+
+
+__all__ = ["load_llff_dataset", "download_llff_dataset"]

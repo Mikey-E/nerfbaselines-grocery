@@ -11,14 +11,32 @@ import pytest
 from pathlib import Path
 import numpy as np
 from PIL import Image
-# from nerfbaselines.utils import setup_logging
-# 
-# setup_logging(True)
 
 
 class _nullcontext(contextlib.nullcontext):
     def __call__(self, fn):
         return fn
+
+
+
+@contextlib.contextmanager
+def patch_modules(update):
+    _empty = object()
+    old_values = {k: sys.modules.get(k, _empty) for k in update}
+    try:
+        for k, v in update.items():
+            sys.modules[k] = v  # type: ignore
+        yield None
+    finally:
+        for k, v in old_values.items():
+            if v is _empty:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v  # type: ignore
+
+@pytest.fixture(name="patch_modules")
+def patch_modules_fixture():
+    return patch_modules
 
 
 def make_dataset(path: Path, num_images=10):
@@ -46,6 +64,7 @@ def make_dataset(path: Path, num_images=10):
 
 
 def make_blender_dataset(path: Path, num_images=10):
+    del num_images
     path = Path(path) / "lego"
     path.mkdir(parents=True)
     w, h = 64, 64
@@ -63,6 +82,14 @@ def make_blender_dataset(path: Path, num_images=10):
     create_split("train")
     create_split("test")
     create_split("val")
+    with path.joinpath("nb-info.json").open("w") as f:
+        json.dump({
+            "id": "blender",
+            "scene": "lego",
+            "type": "object-centric",
+            "evaluation_protocol": "nerf",
+            "loader": "nerfbaselines.datasets.blender:load_blender_dataset",
+        }, f)
     return path
 
 
@@ -93,24 +120,42 @@ def patch_prefix(tmp_path):
             os.environ.pop("NS_PREFIX", None)
 
 
+def is_gpu_error(e: Exception) -> bool:
+    if isinstance(e, RuntimeError) and "Found no NVIDIA driver on your system." in str(e):
+        return True
+    if isinstance(e, EnvironmentError) and "unknown compute capability. ensure pytorch with cuda support is installed." in str(e).lower():
+        return True
+    if isinstance(e, ImportError) and "libcuda.so.1: cannot open shared object file" in str(e):
+        return True
+    if isinstance(e, RuntimeError) and "No suitable GPU found for rendering" in str(e):
+        return True
+    return False
+
+
+@pytest.fixture(name="is_gpu_error")
+def is_gpu_error_fixture():
+    return is_gpu_error
+
+
 def run_test_train(tmp_path, dataset_path, method_name, backend="python", config_overrides=None):
     from nerfbaselines.training import Trainer
     from nerfbaselines import metrics
     metrics._LPIPS_CACHE.clear()
     metrics._LPIPS_GPU_AVAILABLE = None
     sys.modules.pop("nerfbaselines._metrics_lpips", None)
-    from nerfbaselines.training import train_command
+    from nerfbaselines.cli._train import train_command
     from nerfbaselines.io import get_checkpoint_sha
-    from nerfbaselines.cli import render_command
-    from nerfbaselines.utils import Indices, remap_error
-    from nerfbaselines.utils import NoGPUError
+    from nerfbaselines.cli._render import render_command
+    from nerfbaselines.utils import Indices
     from nerfbaselines.io import deserialize_nb_info
 
-    # train_command.callback(method, checkpoint, data, output, no_wandb, verbose, backend, eval_single_iters, eval_all_iters)
+    # train_command.callback(method, checkpoint, data, output, no_wandb, backend, eval_single_iters, eval_all_iters)
     (tmp_path / "output").mkdir()
     num_steps = [13]
+    workdir = os.getcwd()
     try:
-        train_cmd = remap_error(train_command.callback)
+        train_cmd = train_command.callback
+        assert train_cmd is not None
         old_init = Trainer.__init__
         
         def __init__(self, *args, **kwargs):
@@ -120,9 +165,14 @@ def run_test_train(tmp_path, dataset_path, method_name, backend="python", config
                 if isinstance(v, Indices):
                     v.total = self.num_iterations + 1
         with mock.patch.object(Trainer, '__init__', __init__):
-            train_cmd(method_name, None, str(dataset_path), str(tmp_path / "output"), False, backend, Indices.every_iters(9), Indices.every_iters(5), Indices([-1]), logger="none", config_overrides=config_overrides)
-    except NoGPUError:
-        pytest.skip("no GPU available")
+            train_cmd(method_name, None, str(dataset_path), str(tmp_path / "output"), backend, Indices.every_iters(9), Indices.every_iters(5), Indices([-1]), logger="none", config_overrides=config_overrides)
+    except Exception as e:
+        if is_gpu_error(e):
+            pytest.skip("no GPU available")
+        raise
+    finally:
+        # Restore working directory
+        os.chdir(workdir)
 
     # Test if model was saved at the end
     assert (tmp_path / "output" / "checkpoint-13").exists()
@@ -144,9 +194,10 @@ def run_test_train(tmp_path, dataset_path, method_name, backend="python", config
     assert get_checkpoint_sha(str(tmp_path / "output" / "checkpoint-13")) == info["checkpoint_sha256"], "checkpoint sha mismatch"
 
     # Test restore checkpoint and render
-    render_cmd = remap_error(render_command.callback)
+    render_cmd = render_command.callback
+    assert render_cmd is not None
     # render_command(checkpoint, data, output, split, verbose, backend):
-    render_cmd(str(tmp_path / "output" / "checkpoint-13"), str(dataset_path), str(tmp_path / "output-render"), "test", verbose=False, backend_name=backend)
+    render_cmd(str(tmp_path / "output" / "checkpoint-13"), str(dataset_path), str(tmp_path / "output-render"), "test", backend_name=backend)
 
     print(os.listdir(tmp_path / "output-render"))
     assert (tmp_path / "output-render").exists()
@@ -162,19 +213,22 @@ def run_test_train(tmp_path, dataset_path, method_name, backend="python", config
     # Test can restore checkpoint and continue training
     (tmp_path / "output" / "predictions-13.tar.gz").unlink()
     num_steps[0] = 14
-    with mock.patch.object(Trainer, '__init__', __init__):
-        train_cmd(
-            method_name,
-            tmp_path / "output" / "checkpoint-13",
-            str(dataset_path),
-            str(tmp_path / "output"),
-            False,
-            backend,
-            Indices.every_iters(9), 
-            Indices.every_iters(5),
-            Indices([-1]),
-            logger="none",
-        )
+    cwd = os.getcwd()
+    try:
+        with mock.patch.object(Trainer, '__init__', __init__):
+            train_cmd(
+                method_name,
+                tmp_path / "output" / "checkpoint-13",
+                str(dataset_path),
+                str(tmp_path / "output"),
+                backend,
+                Indices.every_iters(9), 
+                Indices.every_iters(5),
+                Indices([-1]),
+                logger="none",
+            )
+    finally:
+        os.chdir(cwd)
     assert (tmp_path / "output" / "checkpoint-14").exists()
     assert (tmp_path / "output" / "predictions-14.tar.gz").exists()
     assert not (tmp_path / "output" / "predictions-13.tar.gz").exists()
@@ -209,7 +263,7 @@ def run_test_train_fixture(tmp_path_factory, request: pytest.FixtureRequest):
 
 
 @pytest.fixture
-def mock_torch():
+def mock_torch(patch_modules):
     torch = mock.MagicMock()
 
     class Tensor(np.ndarray):
@@ -405,6 +459,7 @@ def mock_torch():
             self.modules = list(args)
 
         def add_module(self, name, module):
+            del name
             self.modules.append(module)
 
         def forward(self, x):  # type: ignore
@@ -413,8 +468,8 @@ def mock_torch():
             return x
 
     torch.nn.Sequential = Sequential
-    
-    with mock.patch.dict(sys.modules, {
+
+    with patch_modules({
         "torch": torch, 
         "torch.nn": torch.nn,
         "torchvision": torchvision}):
@@ -436,10 +491,14 @@ def no_extras(request):
 
     class FailedTorch:
         def __getattribute__(self, __name: str):
-            raise ImportError("torch not available")
+            raise ImportError("torch not available", name="torch." + __name)
 
-    with mock.patch.dict(sys.modules, {
-        "torch": FailedTorch(),
-    }):
+    old_torch = sys.modules.get("torch", None)
+    try:
+        sys.modules["torch"] = FailedTorch()  # type: ignore
         yield None
-        return
+    finally:
+        if old_torch is not None:
+            sys.modules["torch"] = old_torch
+        else:
+            sys.modules.pop("torch", None)

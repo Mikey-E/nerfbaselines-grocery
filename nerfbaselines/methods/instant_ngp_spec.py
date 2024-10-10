@@ -1,23 +1,24 @@
 import os
-from ..registry import MethodSpec, register
+from nerfbaselines import register, MethodSpec
 
 
+_BLENDER_NOTE = """Instant-NGP trained and evaluated on black background instead of white."""
 paper_results = {
     # blender scenes: Mic Ficus Chair Hotdog Materials Drums Ship Lego
     # blender PSNRs: 36.22 33.51 35.00 37.40 29.78 26.02 31.10 36.39 
-    "blender/mic": {"psnr": 36.22},
-    "blender/ficus": {"psnr": 33.51},
-    "blender/chair": {"psnr": 35.00},
-    "blender/hotdog": {"psnr": 37.40},
-    "blender/materials": {"psnr": 29.78},
-    "blender/drums": {"psnr": 26.02},
-    "blender/ship": {"psnr": 31.10},
-    "blender/lego": {"psnr": 36.39},
+    "blender/mic": {"psnr": 36.22, "note": _BLENDER_NOTE},
+    "blender/ficus": {"psnr": 33.51, "note": _BLENDER_NOTE},
+    "blender/chair": {"psnr": 35.00, "note": _BLENDER_NOTE},
+    "blender/hotdog": {"psnr": 37.40, "note": _BLENDER_NOTE},
+    "blender/materials": {"psnr": 29.78, "note": _BLENDER_NOTE},
+    "blender/drums": {"psnr": 26.02, "note": _BLENDER_NOTE},
+    "blender/ship": {"psnr": 31.10, "note": _BLENDER_NOTE},
+    "blender/lego": {"psnr": 36.39, "note": _BLENDER_NOTE},
 }
 
 
 InstantNGPSpec: MethodSpec = {
-    "method": ".instant_ngp:InstantNGP",
+    "method_class": ".instant_ngp:InstantNGP",
     "conda": {
         "environment_name": os.path.split(__file__[:-len("_spec.py")])[-1].replace("_", "-"),
         "python_version": "3.9",
@@ -60,7 +61,8 @@ cmake --build build --config RelWithDebInfo -j
 
 # NOTE: torch is needed for nerfbaselines
 conda install -y mkl==2023.1.0 pytorch==2.0.1 torchvision==0.15.2 pytorch-cuda=11.7 'numpy<2.0.0' -c pytorch -c nvidia
-pip install msgpack==1.0.8
+pip install msgpack==1.0.8 importlib_metadata typing_extensions
+if ! python -c 'import cv2'; then pip install opencv-python-headless; fi
 mkdir -p "$CONDA_PREFIX/etc/conda/activate.d"
 echo "export PYTHONPATH=\"$CONDA_PREFIX/src/instant-ngp/build:\$PYTHONPATH\"" >> "$CONDA_PREFIX/etc/conda/activate.d/env_vars.sh"
 echo "export LD_LIBRARY_PATH=\"$CONDA_PREFIX/src/instant-ngp/build:$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH\"" >> "$CONDA_PREFIX/etc/conda/activate.d/env_vars.sh"
@@ -82,7 +84,12 @@ function nb-post-install () {
         "image": "kulhanek/ingp:latest",
         "python_path": "python3",
         "home_path": "/root",
-        "build_script": "",  # Force build
+        "build_script": """
+# Install default torch to compute metrics on cuda inside the container
+pip install opencv-python-headless torch==2.0.1 torchvision==0.15.2 'numpy<2.0.0' --index-url https://download.pytorch.org/whl/cu117
+pip install msgpack==1.0.8 importlib_metadata typing_extensions
+if ! python -c 'import cv2'; then pip install opencv-python-headless; fi
+""",
     },
     "metadata": {
         "name": "Instant NGP",
@@ -96,8 +103,9 @@ This method trains very fast (~6 min) and renders also fast ~3 FPS.""",
         "licenses": [{"name": "custom, research only", "url": "https://raw.githubusercontent.com/NVlabs/instant-ngp/master/LICENSE.txt"}],
     },
     "backends_order": ["docker", "conda"],
-    "dataset_overrides": {
+    "presets": {
         "blender": {
+            "@apply": [{"dataset": "blender"}],
             "testbed.color_space": "SRGB",
             "testbed.nerf.cone_angle_constant": 0,
             "testbed.nerf.training.random_bg_color": False,
@@ -106,6 +114,13 @@ This method trains very fast (~6 min) and renders also fast ~3 FPS.""",
             "keep_coords": True,
         },
     },
+    "id": "instant-ngp",
+    "implementation_status": {
+        "blender": "reproducing",
+        "mipnerf360": "working",
+        "tanksandtemples": "working",
+        "nerfstudio": "working",
+    },
 }
 
-register(InstantNGPSpec, name="instant-ngp")
+register(InstantNGPSpec)

@@ -3,14 +3,16 @@ import json
 import warnings
 import os
 import io
-from typing import Optional, Iterable, Sequence, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 from pathlib import Path
 import base64
 import functools
 import gc
 import numpy as np
-from nerfbaselines.types import Method, MethodInfo, ModelInfo, Dataset, OptimizeEmbeddingsOutput
-from nerfbaselines.types import Cameras, camera_model_to_int
+from nerfbaselines import (
+    Method, MethodInfo, ModelInfo, Dataset,
+    Cameras, camera_model_to_int
+)
 
 try:
     # We need to import torch before jax to load correct CUDA libraries
@@ -71,12 +73,14 @@ def patch_multinerf_with_multicam():
             pix_to_dir(pix_x_int, pix_y_int + 1)
         ], axis=0)
         # For jax, need to specify high-precision matmul.
-        matmul = camera_utils.math.matmul if xnp == jnp else xnp.matmul
+        matmul = camera_utils.math.matmul if xnp.__name__ == jnp.__name__ else xnp.matmul
         mat_vec_mul = lambda A, b: matmul(A, b[..., None])[..., 0]
         # Apply inverse intrinsic matrices.
         camera_dirs_stacked = mat_vec_mul(pixtocams, pixel_dirs_stacked)
 
         mask = camtype > 0
+        is_uniform = True
+        dl = camera_dirs_stacked
         if xnp.any(mask):
             is_uniform = xnp.all(mask)
             if is_uniform:
@@ -96,9 +100,9 @@ def patch_multinerf_with_multicam():
               **dist_dict,
               xnp=xnp)
             dl = xnp.stack([x, y, xnp.ones_like(x)], -1)
-            dcamera_types = camtype[mask]
+            dcamtypes = camtype[mask]
 
-            fisheye_mask = dcamera_types == 2
+            fisheye_mask = dcamtypes == 2
             if fisheye_mask.any():
                 is_all_fisheye = xnp.all(fisheye_mask)
                 if is_all_fisheye:
@@ -265,10 +269,6 @@ class NBDataset(MNDataset):
         if not self._eval:
             return super().start()
 
-    def _next_train(self):
-        if not self._eval:
-            return super()._next_train()
-
     def _next_test(self):
         if not self._eval:
             return super()._next_test()
@@ -297,7 +297,7 @@ class NBDataset(MNDataset):
             camera_model_to_int("opencv"): 1,
             camera_model_to_int("opencv_fisheye"): 2,
         }
-        self.camtype = np.array([camtype_map[i] for i in cameras.camera_types], np.int32)
+        self.camtype = np.array([camtype_map[i] for i in cameras.camera_models], np.int32)
         self.images_files = self.dataset["image_paths"]
         dataset_len = len(self.dataset["image_paths"])
         distortion_params = np.zeros((dataset_len, 6), dtype=np.float32)
@@ -419,8 +419,6 @@ class NBDataset(MNDataset):
 
 
 class SeaThruNeRF(Method):
-    _method_name: str = "seathru-nerf"
-
     def __init__(self, *,
                  checkpoint=None, 
                  train_dataset: Optional[Dataset] = None,
@@ -429,16 +427,11 @@ class SeaThruNeRF(Method):
 
         self._loaded_step = None
         self.pdataset_iter = None
-        self.lr_fn = None
         self.train_pstep = None
-        self.render_eval_pfn = None
-        self.rngs = None
         self.step = 0
         self.state = None
         self.cameras = None
         self.dataset = None
-        self.config = None
-        self.model = None
         self._config_str = None
         self._dataparser_transform = None
         self._pixtocam_ndc = None
@@ -451,9 +444,10 @@ class SeaThruNeRF(Method):
                         self._pixtocam_ndc = numpy_from_base64(meta["pixtocam_ndc_base64"])
             else:
                 raise ValueError("Could not find dataparser_transform.json in the checkpoint.")
-            self.step = self._loaded_step = max((int(x.split("_")[1]) for x in os.listdir(checkpoint) if x.startswith("checkpoint_")), default=None)
+            self._loaded_step = max((int(x.split("_")[1]) for x in os.listdir(checkpoint) if x.startswith("checkpoint_")), default=None)
             if self._loaded_step is None:
                 raise ValueError("Could not find any checkpoints in the directory.")
+            self.step = self._loaded_step
             self._config_str = (Path(checkpoint) / "config.gin").read_text()
             self.config = self._load_config()
         else:
@@ -502,10 +496,9 @@ class SeaThruNeRF(Method):
         return config
 
     @classmethod
-    def get_method_info(cls) -> MethodInfo:
-        assert cls._method_name is not None, "Method was not properly registered"
+    def get_method_info(cls):
         return MethodInfo(
-            name=cls._method_name,
+            method_id="",  # Will be set by the registry
             required_features=frozenset(("color",)),
             supported_camera_models=frozenset(("pinhole", "opencv", "opencv_fisheye")),
             supported_outputs=(
@@ -579,7 +572,7 @@ class SeaThruNeRF(Method):
         self.model, state, self.render_eval_pfn, train_pstep, self.lr_fn = setup
 
         variables = state.params
-        num_params = jax.tree_util.tree_reduce(lambda x, y: x + jnp.prod(jnp.array(y.shape)), variables, initializer=0)
+        num_params = jax.tree_util.tree_reduce(lambda x, y: x + jnp.prod(jnp.array(y.shape)), variables, initializer=0)  # type: ignore
         print(f"Number of parameters being optimized: {num_params}")
 
         if dataset.size > self.model.num_glo_embeddings and self.model.num_glo_features > 0:
@@ -607,6 +600,8 @@ class SeaThruNeRF(Method):
         return jnp.clip((self.step - 1) / (self.config.max_steps - 1), 0, 1)
 
     def train_iteration(self, step: int):
+        assert self.pdataset_iter is not None, "Method not initialized for training"
+        assert self.train_pstep is not None, "Method not initialized for training"
         self.step = step
         batch = next(self.pdataset_iter)
 
@@ -660,6 +655,7 @@ class SeaThruNeRF(Method):
             state_to_save = jax.device_get(flax.jax_utils.unreplicate(self.state))
             checkpoints.save_checkpoint(path, state_to_save, int(self.step), keep=100)
             # np.savetxt(Path(path) / "dataparser_transform.txt", self._dataparser_transform)
+            assert self._dataparser_transform is not None, "dataparser_transform must be set"
             with Path(path).joinpath("dataparser_transform.json").open("w+") as fp:
                 fp.write(
                     json.dumps(
@@ -672,26 +668,24 @@ class SeaThruNeRF(Method):
                     )
                 )
             with (Path(path) / "config.gin").open("w+") as f:
-                f.write(self._config_str)
+                f.write(self._config_str or "")
 
-    def render(self, cameras: Cameras, *, embeddings=None, options=None):
+    def render(self, camera: Cameras, *, options=None):
         del options
-        if embeddings is not None:
-            raise NotImplementedError(f"Optimizing embeddings is not supported for method {self.get_method_info()['name']}")
+        camera = camera.item()  # Ensure single camera
+
         # Test-set evaluation.
         # We reuse the same random number generator from the optimization step
         # here on purpose so that the visualization matches what happened in
         # training.
-        sizes = cameras.image_sizes
-        poses = cameras.poses
         eval_variables = flax.jax_utils.unreplicate(self.state).params
-        mwidth, mheight = sizes.max(0)
         assert self._dataparser_transform is not None
+        w, h = camera.image_sizes
         test_dataset = NBDataset(
             dict(
-                cameras=cameras,
-                image_paths=[f"{i:06d}.png" for i in range(len(poses))],
-                images=np.zeros((len(sizes), mheight, mwidth), dtype=np.uint8),
+                cameras=camera[None],
+                image_paths=["{0:06d}.png"],
+                images=np.zeros((1, h, w), dtype=np.uint8),
             ),
             self.config,
             eval=True,
@@ -699,41 +693,15 @@ class SeaThruNeRF(Method):
             pixtocam_ndc=self._pixtocam_ndc,
         )
 
-        for test_case in test_dataset:
-            rendering = models.render_image(
-                functools.partial(self.render_eval_pfn, eval_variables, self.train_frac), test_case.rays, self.rngs[0], self.config, verbose=False)
-            out = {
-                "color": np.array(rendering["rgb"], dtype=np.float32),
-                "accumulation": np.array(rendering["acc"], dtype=np.float32),
-                "depth": np.array(rendering["distance_median"], dtype=np.float32),
-                "depth_mean": np.array(rendering["distance_mean"], dtype=np.float32),
-                "color_clean": np.array(rendering["direct"], dtype=np.float32),
-                "color_backscatter": np.array(rendering["bs"], dtype=np.float32),
-            }
-            yield out
-
-    def optimize_embeddings(
-        self, 
-        dataset: Dataset,
-        embeddings: Optional[Sequence[np.ndarray]] = None
-    ) -> Iterable[OptimizeEmbeddingsOutput]:
-        """
-        Optimize embeddings for each image in the dataset.
-
-        Args:
-            dataset: Dataset.
-            embeddings: Optional initial embeddings.
-        """
-        del dataset, embeddings
-        raise NotImplementedError()
-
-    def get_train_embedding(self, index: int) -> Optional[np.ndarray]:
-        """
-        Get the embedding for a training image.
-
-        Args:
-            index: Index of the image.
-        """
-        del index
-        return None
-
+        test_case = next(iter(test_dataset))
+        rendering = models.render_image(
+            functools.partial(self.render_eval_pfn, eval_variables, self.train_frac), test_case.rays, self.rngs[0], self.config, verbose=False)
+        out = {
+            "color": np.array(rendering["rgb"], dtype=np.float32),
+            "accumulation": np.array(rendering["acc"], dtype=np.float32),
+            "depth": np.array(rendering["distance_median"], dtype=np.float32),
+            "depth_mean": np.array(rendering["distance_mean"], dtype=np.float32),
+            "color_clean": np.array(rendering["direct"], dtype=np.float32),
+            "color_backscatter": np.array(rendering["bs"], dtype=np.float32),
+        }
+        return out

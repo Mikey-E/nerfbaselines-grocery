@@ -27,6 +27,9 @@ def download_pointcloud(url):
 
 
 class TetraNeRF(NerfStudio):
+    _require_points3D = True
+    _default_nerfstudio_name = "tetra-nerf-original"
+
     def _patch_config(self, config, *args, **kwargs):
         cfg = config.pipeline.datamanager.dataparser
         if hasattr(cfg, "alpha_color"):
@@ -44,8 +47,8 @@ class TetraNeRF(NerfStudio):
                 super().__init__(config, *args, **kwargs)
         return M
 
-    def _patch_datamanager(self, datamanager_cls, *, train_dataset, **kwargs):
-        datamanager_cls = super()._patch_datamanager(datamanager_cls, train_dataset=train_dataset, **kwargs)
+    def _patch_datamanager(self, datamanager_cls, **kwargs):
+        datamanager_cls = super()._patch_datamanager(datamanager_cls, **kwargs)
         class DM(datamanager_cls):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
@@ -55,7 +58,7 @@ class TetraNeRF(NerfStudio):
 
     def _setup(self, train_dataset=None, *args, **kwargs):
         if train_dataset is not None:
-            dataset_name = train_dataset["metadata"]["name"]
+            dataset_name = train_dataset["metadata"]["id"]
             if dataset_name == "blender":
                 # We use the official PC for the Blender dataset
                 scene = train_dataset["metadata"]["scene"]
@@ -69,3 +72,7 @@ class TetraNeRF(NerfStudio):
                 logging.info(f"Downloading official point cloud for {dataset_name}/{scene} from {url}")
                 train_dataset["points3D_xyz"], train_dataset["points3D_rgb"] = download_pointcloud(url)
         return super()._setup(train_dataset, *args, **kwargs)
+
+
+class TetraNeRFLatest(NerfStudio):
+    _default_nerfstudio_name = "tetra-nerf"

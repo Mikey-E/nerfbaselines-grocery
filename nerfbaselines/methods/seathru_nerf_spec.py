@@ -1,8 +1,8 @@
 import os
-from ..registry import MethodSpec, register
+from nerfbaselines import register, MethodSpec
 
 
-paper_results = {
+_paper_results = {
     "seathru-nerf/curasao": { "psnr": 30.48, "ssim": 0.87, "lpips": 0.20 },
     "seathru-nerf/panama": { "psnr": 27.89, "ssim": 0.83, "lpips": 0.22 },
     "seathru-nerf/japanese-gradens": { "psnr": 21.83, "ssim": 0.77, "lpips": 0.25 },
@@ -10,7 +10,7 @@ paper_results = {
 
 
 SeaThruNeRFSpec: MethodSpec = {
-    "method": ".seathru_nerf:SeaThruNeRF",
+    "method_class": ".seathru_nerf:SeaThruNeRF",
     "conda": {
         "environment_name": os.path.split(__file__[:-len("_spec.py")])[-1].replace("_", "-"),
         "python_version": "3.11",
@@ -54,6 +54,9 @@ git clone https://github.com/rmbrualla/pycolmap.git ./internal/pycolmap
 conda develop "$PWD/internal/pycolmap"
 conda develop "$PWD/internal/pycolmap/pycolmap"
 
+# Install default torch to compute metrics on cuda inside the container
+pip install torch==2.2.0 torchvision==0.17.0 'numpy<2.0.0' --index-url https://download.pytorch.org/whl/cu118
+
 # Confirm that all the unit tests pass.
 # ./scripts/run_all_unit_tests.sh
 """,
@@ -67,8 +70,12 @@ conda develop "$PWD/internal/pycolmap/pycolmap"
         "licenses": [{"name": "Apache 2.0","url": "https://raw.githubusercontent.com/deborahLevy130/seathru_NeRF/master/LICENSE"}],
         "description": """Official SeaThru-NeRF implementation.
 It is based on MipNeRF 360 and was disagned for underwater scenes.""",
-        "paper_results": paper_results,
+        "paper_results": _paper_results,
     },
+    "id": "seathru-nerf",
+    "implementation_status": {
+        "seathru-nerf": "reproducing",
+    }
 }
 
-register(SeaThruNeRFSpec, name="seathru-nerf")
+register(SeaThruNeRFSpec)

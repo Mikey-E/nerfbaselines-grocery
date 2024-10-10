@@ -1,24 +1,25 @@
 import json
 import sys
 import pytest
-from pathlib import Path
 from typing import Any, cast
 from unittest import mock
-from nerfbaselines.results import get_benchmark_datasets, render_markdown_dataset_results_table
-from nerfbaselines.registry import methods_registry as registry
+from nerfbaselines import get_supported_methods, get_supported_datasets
+from nerfbaselines.results import render_markdown_dataset_results_table
 
 
 def mock_results(results_path, datasets, methods):
-    import nerfbaselines.datasets
-    from nerfbaselines import registry
+    from nerfbaselines import get_method_spec, get_dataset_spec
     from nerfbaselines.io import _encode_values
 
-    root = Path(nerfbaselines.__file__).absolute().parent
     for method in methods:
+        spec = get_method_spec(method)
         for dataset in datasets:
-            dinfo = cast(Any, registry.datasets_registry[dataset].get("metadata", {}).copy())
+            dataset_spec = get_dataset_spec(dataset)
+            dinfo = cast(Any, dataset_spec.get("metadata", {}).copy())
             for scene_data in dinfo["scenes"]:
                 scene = scene_data["id"]
+                if spec.get("output_artifacts", {}).get(f"{dataset}/{scene}"):
+                    continue
 
                 # Create results
                 results_path.joinpath(method, dataset).mkdir(parents=True, exist_ok=True)
@@ -31,16 +32,14 @@ def mock_results(results_path, datasets, methods):
                 )
 
 
-def test_get_benchmark_datasets():
-    datasets = get_benchmark_datasets()
+def test_get_supported_datasets():
+    datasets = get_supported_datasets()
     assert "blender" in datasets
     assert "mipnerf360" in datasets
 
 
 def assert_compile_dataset_results_correct(results, dataset):
     assert "methods" in results
-    assert "scenes" in results["methods"][0]
-    assert "name" in results["methods"][0]
     assert "id" in results
     assert results["id"] == dataset
 
@@ -54,42 +53,56 @@ def assert_compile_dataset_results_correct(results, dataset):
     assert len(results["methods"]) > 0
     assert len(results["scenes"]) > 0
     assert len(results["metrics"]) > 0
-    assert_nonempty_string(results["metrics"][0].get("id"))
-    assert_nonempty_string(results["metrics"][0].get("name"))
-    assert_nonempty_string(results["metrics"][0].get("description"))
-    assert_nonempty_string(results["metrics"][0].get("link"))
-    assert results["metrics"][0].get("ascending") in {True, False}
-    assert_nonempty_string(results["scenes"][0].get("id"))
-    assert_nonempty_string(results["scenes"][0].get("name"))
-    method = results["methods"][0]
-    assert_nonempty_string(method.get("id"))
-    assert_nonempty_string(method.get("name"))
-    assert_nonempty_string(method.get("description"))
-    assert isinstance(method.get("psnr"), float)
-    assert len(method["scenes"]) > 0
-    fscene = next(iter(method["scenes"].values()))
-    assert isinstance(fscene.get("psnr"), float)
+    for metric in results["metrics"]:
+        assert_nonempty_string(metric.get("id"))
+        assert_nonempty_string(metric.get("name"))
+        assert_nonempty_string(metric.get("description"))
+        assert_nonempty_string(metric.get("link"))
+        assert metric.get("ascending") in {True, False}
+
+    for scene in results["scenes"]:
+        assert_nonempty_string(scene.get("id"))
+        assert_nonempty_string(scene.get("name"))
+
+    for method in results["methods"]:
+        assert "scenes" in method
+        assert "name" in method
+        assert_nonempty_string(method.get("id"))
+        assert_nonempty_string(method.get("name"))
+        assert_nonempty_string(method.get("description"))
+        assert isinstance(method.get("psnr"), float)
+        assert len(method["scenes"]) > 0
+        fscene = next(iter(method["scenes"].values()))
+        assert isinstance(fscene.get("psnr"), float)
 
 
-@pytest.mark.parametrize("method", list(registry.keys()))
-@pytest.mark.parametrize("dataset", get_benchmark_datasets())
-def test_compile_dataset_results(tmp_path, dataset, method):
+@pytest.mark.parametrize("method", list(get_supported_methods()))
+def test_get_method_info_from_spec(method):
+    from nerfbaselines import MethodInfo, get_method_spec
+    from nerfbaselines.results import get_method_info_from_spec
+
+    spec = get_method_spec(method)
+    method_info: MethodInfo = get_method_info_from_spec(spec)
+    print(method_info)
+    # assert isinstance(method_info, MethodInfo)
+    assert isinstance(method_info, dict)
+    assert method_info["method_id"] == method
+
+
+@pytest.mark.parametrize("dataset", get_supported_datasets())
+def test_compile_dataset_results(tmp_path, dataset):
     from nerfbaselines.results import compile_dataset_results
-
-    mock_results(tmp_path, [dataset], [method])
+    mock_results(tmp_path, [dataset], list(get_supported_methods()))
 
     # Mock
     results = compile_dataset_results(tmp_path, dataset)
-    print(json.dumps(results, indent=2))
     assert_compile_dataset_results_correct(results, dataset)
 
 
-def test_render_dataset_results_json_capture_command(tmp_path, capsys):
-    dataset = next(iter(get_benchmark_datasets()))
-    method = next(iter(registry.keys()))
-
+@pytest.mark.parametrize("dataset", get_supported_datasets())
+def test_render_dataset_results_json_capture_command(tmp_path, capsys, dataset):
     with mock.patch.object(sys, "argv", ["nerfbaselines", "generate-dataset-results", "--output-type", "json", "--results", str(tmp_path / "results"), "--dataset", dataset]):
-        mock_results(tmp_path.joinpath("results"), [dataset], [method])
+        mock_results(tmp_path.joinpath("results"), [dataset], list(get_supported_methods()))
 
         import nerfbaselines.cli
 
@@ -102,14 +115,12 @@ def test_render_dataset_results_json_capture_command(tmp_path, capsys):
         assert_compile_dataset_results_correct(results, dataset)
 
 
-def test_render_dataset_results_json_command(tmp_path):
-    dataset = next(iter(get_benchmark_datasets()))
-    method = next(iter(registry.keys()))
-
+@pytest.mark.parametrize("dataset", get_supported_datasets())
+def test_render_dataset_results_json_command(tmp_path, dataset):
     with mock.patch.object(
         sys, "argv", ["nerfbaselines", "generate-dataset-results", "--output-type", "json", "--results", str(tmp_path / "results"), "--dataset", dataset, "--output", str(tmp_path / "results.json")]
     ):
-        mock_results(tmp_path.joinpath("results"), [dataset], [method])
+        mock_results(tmp_path.joinpath("results"), [dataset], list(get_supported_methods()))
 
         import nerfbaselines.cli
 

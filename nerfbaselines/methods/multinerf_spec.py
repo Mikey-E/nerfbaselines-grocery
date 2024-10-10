@@ -1,8 +1,8 @@
 import os
-from ..registry import MethodSpec, register
+from nerfbaselines import register, MethodSpec
 
 
-paper_results = {
+_paper_results = {
     # 360 scenes: bicycle flowers garden stump treehill room counter kitchen bonsai
     # 360 PSNRs: 24.37 21.73 26.98 26.40 22.87 31.63 29.55 32.23 33.46
     # 360 SSIMs: 0.685 0.583 0.813 0.744 0.632 0.913 0.894 0.920 0.941
@@ -20,7 +20,7 @@ paper_results = {
 
 
 MultiNeRFSpec: MethodSpec = {
-    "method": ".multinerf:MultiNeRF",
+    "method_class": ".multinerf:MultiNeRF",
     "conda": {
         "environment_name": os.path.split(__file__[:-len("_spec.py")])[-1].replace("_", "-"),
         "python_version": "3.11",
@@ -63,49 +63,41 @@ git clone https://github.com/rmbrualla/pycolmap.git ./internal/pycolmap
 conda develop "$PWD/internal/pycolmap"
 conda develop "$PWD/internal/pycolmap/pycolmap"
 
+# Install default torch to compute metrics on cuda inside the container
+pip install torch==2.2.0 torchvision==0.17.0 'numpy<2.0.0' --index-url https://download.pytorch.org/whl/cu118
+
 # Confirm that all the unit tests pass.
 # ./scripts/run_all_unit_tests.sh
 """,
     },
     "metadata": {
         "name": "Mip-NeRF 360",
-        "description": "",
+        "description": """Official Mip-NeRF 360 implementation addapted to handle different camera distortion/intrinsic parameters.
+It was designed for unbounded object-centric 360-degree capture and handles anti-aliasing well.
+It is, however slower to train and render compared to other approaches.""",
+        "paper_results": _paper_results,
         "paper_title": "Mip-NeRF 360: Unbounded Anti-Aliased Neural Radiance Fields",
         "paper_authors": ["Jonathan T. Barron", "Ben Mildenhall", "Dor Verbin", "Pratul P. Srinivasan", "Peter Hedman"],
         "paper_link": "https://arxiv.org/pdf/2111.12077.pdf",
         "link": "https://jonbarron.info/mipnerf360/",
         "licenses": [{"name": "Apache 2.0","url": "https://raw.githubusercontent.com/google-research/multinerf/main/LICENSE"}],
     },
-    "dataset_overrides": {
-        "blender": { "base_config": "blender_256.gin" },
-    },
-}
-
-register(
-    MultiNeRFSpec,
-    name="mipnerf360",
-    metadata={
-        "name": "Mip-NeRF 360",
-        "description": """Official Mip-NeRF 360 implementation addapted to handle different camera distortion/intrinsic parameters.
-It was designed for unbounded object-centric 360-degree capture and handles anti-aliasing well.
-It is, however slower to train and render compared to other approaches.""",
-        "paper_results": paper_results,
-    },
-)
-register(
-    MultiNeRFSpec,
-    name="mipnerf360:single-gpu",
-    kwargs={
-        "config_overrides": {
+    "presets": {
+        "blender": { "@apply": [{"dataset": "blender"}], "base_config": "blender_256.gin" },
+        "single-gpu": {
+            "@description": "A version of the method designed for single GPU training (not official).",
             "Config.batch_size": 4096,
             "lr_init": 0.002 / 2,
             "lr_final": 0.00002 / 2,
             "Config.max_steps": 1_000_000,
         }
     },
-    metadata={
-        "name": "Mip-NeRF 360 (single GPU)",
-        "description": """Mip-NeRF 360 implementation addapted to handle different camera distortion/intrinsic parameters.
-This version is optimized for a single GPU and differs from the official hyperparameters!""",
-    },
-)
+    "id": "mipnerf360",
+    "implementation_status": {
+        "blender": "reproducing",
+        "mipnerf360": "reproducing",
+        "tanksandtemples": "working",
+    }
+}
+
+register(MultiNeRFSpec)

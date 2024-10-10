@@ -3,9 +3,12 @@ NOTE: there is slight difference from K-Planes official implementation.
 (Photo Tourism): In the official implementation, the closest camera bounds are used for rendering test images.
                  Here, we make it more stable by using the top 5 closest cameras.
 """
+import hashlib
+import struct
 import shutil
 import glob
 import tqdm
+import dataclasses
 import requests
 import pprint
 import warnings
@@ -14,61 +17,92 @@ import logging
 import os
 import pprint
 from contextlib import contextmanager
-from typing import Optional, Iterable, Sequence
+from typing import Optional
 import numpy as np
 import torch
 import torch.utils.data
-from functools import cached_property, partial
-from nerfbaselines.utils import NoGPUError
+from functools import partial
+from nerfbaselines import (
+    Dataset, RenderOutput, OptimizeEmbeddingOutput,
+    Method, MethodInfo, ModelInfo, Cameras, camera_model_to_int,
+)
+from nerfbaselines.utils import convert_image_dtype
+import tempfile
 
 
-# Patch resource.setrlimit
-import resource
-_backup = resource.setrlimit
+def flatten_hparams(hparams, *, separator: str = "/", _prefix: str = ""):
+    flat = {}
+    if dataclasses.is_dataclass(hparams):
+        hparams = {f.name: getattr(hparams, f.name) for f in dataclasses.fields(hparams)}
+    for k, v in hparams.items():
+        if _prefix:
+            k = f"{_prefix}{separator}{k}"
+        if isinstance(v, dict) or dataclasses.is_dataclass(v):
+            flat.update(flatten_hparams(v, _prefix=k, separator=separator).items())
+        else:
+            flat[k] = v
+    return flat
+
+
+def get_torch_checkpoint_sha(checkpoint_data):
+    sha = hashlib.sha256()
+    def update(d):
+        if type(d).__name__ == "Tensor":
+            sha.update(d.cpu().numpy().tobytes())
+        elif isinstance(d, dict):
+            items = sorted(d.items(), key=lambda x: x[0])
+            for k, v in items:
+                update(k)
+                update(v)
+        elif isinstance(d, (list, tuple)):
+            for v in d:
+                update(v)
+        elif isinstance(d, (int, float)):
+            sha.update(struct.pack("<f", d))
+        elif isinstance(d, str):
+            sha.update(d.encode("utf8"))
+        elif d is None:
+            sha.update("(None)".encode("utf8"))
+        else:
+            raise ValueError(f"Unsupported type {type(d)}")
+    update(checkpoint_data)
+    return sha.hexdigest()
+
 
 def _noop(out=None, *args, **kwargs):
     del args, kwargs
     return out
 
-try:
-    resource.setrlimit = _noop
-    import plenoxels.configs as cfg_package  # type: ignore
-    from plenoxels.main import init_trainer  # type: ignore
-    from plenoxels.runners import base_trainer  # type: ignore
-    from plenoxels.runners import video_trainer  # type: ignore
-    from plenoxels.runners import phototourism_trainer  # type: ignore
-    from plenoxels.runners import static_trainer  # type: ignore
-    from plenoxels.utils.parse_args import parse_optfloat  # type: ignore
-    from plenoxels.datasets import phototourism_dataset as ptdataset  # type: ignore
-    import plenoxels.datasets.synthetic_nerf_dataset as sndataset  # type: ignore
-    from plenoxels.datasets.intrinsics import Intrinsics  # type: ignore
-except EnvironmentError as e:
-    # tcnn import error
-    if "unknown compute capability. ensure pytorch with cuda support is installed." in str(e).lower():
-        raise NoGPUError from e
-    raise
-finally:
-    resource.setrlimit = _backup
-del _backup
+
+_kplanes_patched = False
 
 
-from nerfbaselines.types import Dataset, RenderOutput, OptimizeEmbeddingsOutput
-from nerfbaselines.types import Method, MethodInfo, ModelInfo, Cameras, camera_model_to_int
-from nerfbaselines.utils import flatten_hparams, convert_image_dtype
-from nerfbaselines.io import get_torch_checkpoint_sha
-import tempfile
+def _patch_kplanes():
+    global _kplanes_patched
+    if _kplanes_patched:
+        return
+    _kplanes_patched = True
+    # Patch resource.setrlimit
+    import resource
+    _backup = resource.setrlimit
 
+    try:
+        resource.setrlimit = _noop
+        from plenoxels.runners import base_trainer  # type: ignore
+    finally:
+        resource.setrlimit = _backup
+    del _backup
 
-# Patch SummaryWriter
-class NoopWritter:
-    def __init__(self, *args, **kwargs):
-        del args, kwargs
-        pass
-    def __getattr__(self, name):
-        del name
-        return _noop
+    # Patch SummaryWriter
+    class NoopWritter:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+            pass
+        def __getattr__(self, name):
+            del name
+            return _noop
 
-base_trainer.SummaryWriter = NoopWritter
+    base_trainer.SummaryWriter = NoopWritter
 
 
 class LambdaModule(torch.nn.Module):
@@ -82,6 +116,7 @@ class LambdaModule(torch.nn.Module):
 
 @contextmanager
 def _patch_kplanes_phototourism_dataset(dataset, camera_bounds_index):
+    from plenoxels.datasets import phototourism_dataset as ptdataset  # type: ignore
     # Patch kplanes dataset
     with tempfile.TemporaryDirectory(suffix=dataset["metadata"].get("scene") if dataset is not None else None) as tmpdir:
         ptinit_backup = ptdataset.PhotoTourismDataset.__init__
@@ -109,6 +144,12 @@ def _patch_kplanes_phototourism_dataset(dataset, camera_bounds_index):
             return list(range(len(dataset["cameras"]))), dataset["image_paths"]
         def pt_loadcamerametadata(datadir, idx):
             del datadir
+            assert (
+                poses is not None and 
+                kinvs is not None and 
+                bounds is not None and 
+                res is not None
+            ), "Dataset is required to load camera metadata"
             return poses[idx], kinvs[idx], bounds[idx], res[idx]
         def pt_readpng(impath):
             imgid = dataset["image_paths"].index(impath)
@@ -153,6 +194,8 @@ def _patch_kplanes_phototourism_dataset(dataset, camera_bounds_index):
 
 @contextmanager
 def _patch_kplanes_static_datasets(dataset, camera_bounds_index):
+    import plenoxels.datasets.synthetic_nerf_dataset as sndataset  # type: ignore
+    from plenoxels.datasets.intrinsics import Intrinsics  # type: ignore
     del camera_bounds_index
     # Patch kplanes dataset
     # TODO:!!!
@@ -205,6 +248,10 @@ def _patch_kplanes_static_datasets(dataset, camera_bounds_index):
 
 
 def load_data(model_type: str, data_downsample, data_dirs, validate_only: bool, render_only: bool, dataset, camera_bounds_index, **kwargs):
+    from plenoxels.utils.parse_args import parse_optfloat  # type: ignore
+    from plenoxels.runners import video_trainer  # type: ignore
+    from plenoxels.runners import phototourism_trainer  # type: ignore
+    from plenoxels.runners import static_trainer  # type: ignore
     data_downsample = parse_optfloat(data_downsample, default_val=1.0)
 
     if model_type == "video":
@@ -298,6 +345,7 @@ class CameraBoundsIndex:
 
         if dataset_name == "phototourism" and scene in _phototourism_bounds:
             logging.info(f"Using official K-planes pre-computed camera bounds for scene {scene}")
+            assert scene is not None, "Scene is required"  # pyright not clever enough
             with requests.get(_phototourism_bounds[scene]) as r:
                 r.raise_for_status()
                 names, bounds_data = [], []
@@ -355,15 +403,13 @@ class CameraBoundsIndex:
 
 
 class KPlanes(Method):
-    _method_name: str = "kplanes"
-
     def __init__(self, 
                  *,
                  checkpoint: Optional[str] = None,
                  train_dataset: Optional[Dataset] = None,
                  config_overrides: Optional[dict] = None):
+        _patch_kplanes()
         self.checkpoint = str(checkpoint) if checkpoint is not None else None
-        self.camera_bounds_index = None
         self.background = None
         self.step = 0
 
@@ -374,7 +420,9 @@ class KPlanes(Method):
             pass
 
         # Setup config
+        import plenoxels.configs as cfg_package  # type: ignore
         config_root = os.path.join(os.path.dirname(os.path.abspath(cfg_package.__file__)), "final")
+        self._loaded_step = None
         if self.checkpoint is None:  #  or not os.path.exists(os.path.join(self.checkpoint, "config.py")):
             # Load config
             config_path = (config_overrides or {}).copy().pop("config", None)
@@ -384,11 +432,18 @@ class KPlanes(Method):
         else:
             # Load config from checkpoint
             config_path = os.path.join(self.checkpoint, "config.py")
+            if not os.path.exists(self.checkpoint):
+                raise RuntimeError(f"Model directory {self.checkpoint} does not exist")
+            ckpt = torch.load(str(self.checkpoint) + f"/model.pth")
+            self._loaded_step = int(ckpt["global_step"]) + 1
+
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpcpath = os.path.join(tmpdir, os.path.basename(config_path))
             shutil.copy(config_path, tmpcpath)
             spec = importlib.util.spec_from_file_location(
                 os.path.basename(config_path), tmpcpath)
+            assert spec is not None, f"Could not load config from {config_path}"
+            assert spec.loader is not None, f"Could not load config from {config_path}"
             logging.info(f"Loading config from {config_path}")
             cfg = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(cfg)
@@ -403,7 +458,8 @@ class KPlanes(Method):
         self.batch_iter = None
         self._setup(train_dataset)
 
-    def _setup(self, train_dataset: Dataset):
+    def _setup(self, train_dataset: Optional[Dataset]):
+        from plenoxels.main import init_trainer  # type: ignore
         # Set random seed
         np.random.seed(self.config.get("seed", 0))
         torch.manual_seed(self.config.get("seed", 0))
@@ -416,9 +472,10 @@ class KPlanes(Method):
             model_type = "static"
 
         pprint.pprint(self.config)
+        camera_bounds_index = None
         if self.checkpoint is not None:
             try:
-                self.camera_bounds_index = CameraBoundsIndex.load(self.checkpoint)
+                camera_bounds_index = CameraBoundsIndex.load(self.checkpoint)
             except FileNotFoundError as e:
                 if train_dataset is None:
                     raise RuntimeError("Could not load camera bounds from checkpoint."
@@ -427,9 +484,10 @@ class KPlanes(Method):
                                        "also the train dataset into the constructor.") from e
                 else:
                     logging.warning(f"Could not load camera bounds from {self.checkpoint}")
-        if self.camera_bounds_index is None:
+        if camera_bounds_index is None:
             logging.info("Building camera bounds from dataset")
-            self.camera_bounds_index = CameraBoundsIndex.build(train_dataset, self.config)
+            camera_bounds_index = CameraBoundsIndex.build(train_dataset, self.config)
+        self.camera_bounds_index = camera_bounds_index
         data = load_data(model_type, 
                          validate_only=False, 
                          render_only=False, 
@@ -466,15 +524,8 @@ class KPlanes(Method):
                     par.data = state_dict[name].to(par.device)
             old_load_state_dict(state_dict, *args, **kwargs)
 
-        load_state_dict.__patched__ = True
+        load_state_dict.__patched__ = True  # type: ignore
         self.load_state_dict = load_state_dict
-
-    @property
-    def value(self):
-        return self.val
-
-    def __str__(self):
-        return f"{self.val:.2e}"
 
     def train_iteration(self, step):
         if self.batch_iter is None:
@@ -496,8 +547,8 @@ class KPlanes(Method):
         metrics = {"loss": 0.0}
         try:
             # Patch gscaler.scale(loss) to extract the loss value to report as a metric
+            old_scale = self.trainer.gscaler.scale
             try:
-                old_scale = self.trainer.gscaler.scale
                 def scale(loss):
                     metrics["loss"] = float(loss)
                     return old_scale(loss)
@@ -521,22 +572,10 @@ class KPlanes(Method):
         self.trainer.timer.check("after-step")
         return metrics
 
-    @cached_property
-    def _loaded_step(self):
-        loaded_step = None
-        if self.checkpoint is not None:
-            if not os.path.exists(self.checkpoint):
-                raise RuntimeError(f"Model directory {self.checkpoint} does not exist")
-
-            ckpt = torch.load(str(self.checkpoint) + f"/model.pth")
-            return int(ckpt["global_step"]) + 1
-        return loaded_step
-
     @classmethod
     def get_method_info(cls):
-        assert cls._method_name is not None, "Method was not properly registered"
         return MethodInfo(
-            name=cls._method_name,
+            method_id="",  # Will be set by the registry
             required_features=frozenset(("color", "points3D_xyz", "images_points3D_indices")),
             supported_camera_models=frozenset(("pinhole",)),
             supported_outputs=("color", "depth"),
@@ -558,7 +597,8 @@ class KPlanes(Method):
         )
 
     def _get_eval_data(self, cameras):
-        if isinstance(self.data["ts_dset"], ptdataset.PhotoTourismDataset):
+        if type(self.data["ts_dset"]).__name__ == "PhotoTourismDataset":
+            from plenoxels.datasets import phototourism_dataset as ptdataset  # type: ignore
             poses, kinvs, res = transform_cameras(cameras)
             bounds = self.camera_bounds_index.query(cameras.poses)
             poses, kinvs, bounds = ptdataset.scale_cam_metadata(poses, kinvs, bounds, scale=0.05)
@@ -581,6 +621,7 @@ class KPlanes(Method):
                     "bg_color": torch.ones((1, 3), dtype=torch.float32),
                 }
         elif type(self.data["ts_dset"]).__name__ == "SyntheticNerfDataset":
+            import plenoxels.datasets.synthetic_nerf_dataset as sndataset  # type: ignore
             for i, pose in enumerate(cameras.poses):
                 frame_w, frame_h = cameras.image_sizes[i]
                 # Convert from OpenCV to OpenGL coordinate system
@@ -602,42 +643,44 @@ class KPlanes(Method):
         else:
             raise NotImplementedError("Only phototourism, nerfsynthetic datasets are supported")
 
-    def render(self, cameras: Cameras, *, embeddings=None, options=None) -> Iterable[RenderOutput]:
-        del options
-        assert np.all(cameras.camera_types == camera_model_to_int("pinhole")), "Only pinhole cameras supported"
+    def render(self, camera: Cameras, *, options=None) -> RenderOutput:
+        camera = camera.item()
+        assert np.all(camera.camera_models == camera_model_to_int("pinhole")), "Only pinhole cameras supported"
 
-        def load_embeddings(i, indices):
-            if embeddings is None:
+        def load_embedding(indices):
+            _embnp = (options or {}).get("embedding")
+            if _embnp is None:
                 # Fix bug in kplanes
                 embed = self.trainer.model.field.appearance_embedding
                 embed = old_appearance_embedding.weight.mean(0)
             else:
-                embed = torch.from_numpy(embeddings[i])
+                embed = torch.from_numpy(_embnp)
             embed = embed.to(self.trainer.model.field.appearance_embedding.weight.device)
             return embed.view(*([1] * len(indices.shape)), -1).expand(*indices.shape, -1)
 
         with torch.no_grad():
-            for i, data in enumerate(self._get_eval_data(cameras)):
-                old_train = self.trainer.model.training
-                old_test_appearance_embedding = getattr(self.trainer.model.field, 'test_appearance_embedding', None)
-                old_appearance_embedding = self.trainer.model.field.appearance_embedding
-                
-                try:
-                    self.trainer.model.eval()
-                    if self.trainer.model.field.use_appearance_embedding:
-                        self.trainer.model.field.test_appearance_embedding = LambdaModule(lambda indices: load_embeddings(i, indices))
-                    out = self.trainer.eval_step(data)
-                finally:
-                    self.trainer.model.train(old_train)
-                    if hasattr(self.trainer.model.field, 'test_appearance_embedding'):
-                        del self.trainer.model.field.test_appearance_embedding
-                    if old_test_appearance_embedding is not None:
-                        self.trainer.model.field.test_appearance_embedding = old_test_appearance_embedding
-                w, h = cameras.image_sizes[i]
-                yield {
-                    "color": out["rgb"].view(h, w, -1).cpu().numpy(),
-                    "depth": out["depth"].view(h, w).cpu().numpy(),
-                }
+            data = next(self._get_eval_data(camera[None]))
+
+            old_train = self.trainer.model.training
+            old_test_appearance_embedding = getattr(self.trainer.model.field, 'test_appearance_embedding', None)
+            old_appearance_embedding = self.trainer.model.field.appearance_embedding
+            
+            try:
+                self.trainer.model.eval()
+                if self.trainer.model.field.use_appearance_embedding:
+                    self.trainer.model.field.test_appearance_embedding = LambdaModule(lambda indices: load_embedding(indices))
+                out = self.trainer.eval_step(data)
+            finally:
+                self.trainer.model.train(old_train)
+                if hasattr(self.trainer.model.field, 'test_appearance_embedding'):
+                    del self.trainer.model.field.test_appearance_embedding
+                if old_test_appearance_embedding is not None:
+                    self.trainer.model.field.test_appearance_embedding = old_test_appearance_embedding
+            w, h = camera.image_sizes
+            return {
+                "color": out["rgb"].view(h, w, -1).cpu().numpy(),
+                "depth": out["depth"].view(h, w).cpu().numpy(),
+            }
 
     def save(self, path: str):
         os.makedirs(path, exist_ok=True)
@@ -653,17 +696,13 @@ class KPlanes(Method):
             with open(fname + ".sha256", "w", encoding="utf8") as f:
                 f.write(sha)
 
-    def optimize_embeddings(
-        self, 
-        dataset: Dataset,
-        embeddings: Optional[Sequence[np.ndarray]] = None
-    ) -> Iterable[OptimizeEmbeddingsOutput]:
+    def optimize_embedding(self, dataset: Dataset, *, embedding: Optional[np.ndarray] = None) -> OptimizeEmbeddingOutput:
         """
-        Optimize embeddings for each image in the dataset.
+        Optimize embedding of a single image (passed as dataset).
 
         Args:
-            dataset: Dataset.
-            embeddings: Optional initial embeddings.
+            dataset: Dataset (containing single image).
+            embedding: Optional initial embedding.
         """
         old_test_appearance_embedding = getattr(self.trainer.model.field, 'test_appearance_embedding', None)
         param_trainable = {}
@@ -672,7 +711,7 @@ class KPlanes(Method):
         is_train = self.trainer.model.training
         old_add_scalar = self.trainer.writer.add_scalar
         try:
-          # 1. Initialize test appearance code
+            # 1. Initialize test appearance code
             tst_embedding = torch.nn.Embedding(
                 1, self.trainer.model.field.appearance_embedding_dim
             ).to(self.trainer.device)
@@ -694,40 +733,29 @@ class KPlanes(Method):
             self.trainer.writer.add_scalar = add_scalar
 
             # 3. Optimize
-            cameras = dataset["cameras"]
-            for img_idx in range(len(cameras)):
-                data = next(self._get_eval_data(cameras[img_idx:img_idx+1]))
-                imgs_left = torch.from_numpy(convert_image_dtype(dataset["images"][img_idx], np.float32))
-                data["imgs_left"] = imgs_left.view(-1, imgs_left.shape[-1])
-                with torch.autograd.no_grad():
-                    if embeddings is not None:
-                        tst_embedding.weight.data.copy_(torch.from_numpy(embeddings[img_idx])[None])
-                    else:
-                        tst_embedding.weight.data.copy_(
-                            self.trainer.model.field.appearance_embedding.weight
-                                .detach()
-                                .mean(dim=0, keepdim=True)
-                        )
+            camera = dataset["cameras"].item()
+            data = next(self._get_eval_data(camera[None]))
+            imgs_left = torch.from_numpy(convert_image_dtype(dataset["images"][0], np.float32))
+            data["imgs_left"] = imgs_left.view(-1, imgs_left.shape[-1])
+            with torch.autograd.no_grad():
+                if embedding is not None:
+                    tst_embedding.weight.data.copy_(torch.from_numpy(embedding)[None])
+                else:
+                    tst_embedding.weight.data.copy_(
+                        self.trainer.model.field.appearance_embedding.weight
+                            .detach()
+                            .mean(dim=0, keepdim=True)
+                    )
 
-                # Patch to grab losses
-                losses.clear()
-
-                # Optimize
-                self.trainer.optimize_appearance_step(data, 0)
-                appearance_embedding = tst_embedding.weight.data.cpu().numpy().copy()
-
-                # Render
-                render_output = None
-                for render_output in self.render(cameras[img_idx:img_idx+1], [appearance_embedding]):
-                    pass
-                assert render_output is not None
-                yield {
-                    "embedding": appearance_embedding,
-                    "render_output": render_output,
-                    "metrics": {
-                        "loss": losses.copy(),
-                    }
+            # Optimize
+            self.trainer.optimize_appearance_step(data, 0)
+            appearance_embedding = tst_embedding.weight.data.cpu().numpy().copy()
+            return {
+                "embedding": appearance_embedding,
+                "metrics": {
+                    "loss": losses.copy(),
                 }
+            }
 
         finally:
             self.trainer.model.field.test_appearance_embedding.requires_grad_(False)
@@ -757,4 +785,3 @@ class KPlanes(Method):
         except Exception as e:
             logging.error(f"Failed to get embedding for image {index}: {e}")
             return None
-

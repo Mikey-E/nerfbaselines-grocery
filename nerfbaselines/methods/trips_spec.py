@@ -1,9 +1,9 @@
 import os
-from ..registry import MethodSpec, register
+from nerfbaselines import MethodSpec, register
 
 
 TRIPSSpec: MethodSpec = {
-    "method": "trips_python:TRIPSMethod",
+    "method_class": "trips_python:TRIPSMethod",
     "conda": {
         "environment_name": os.path.split(__file__[:-len("_spec.py")])[-1].replace("_", "-"),
         "python_version": "3.9.7",
@@ -74,6 +74,7 @@ echo "export LD_LIBRARY_PATH=\\"$CONDA_PREFIX/lib:\\$LD_LIBRARY_PATH\\"" >> "$CO
 
 # Install PyTorch such that it can be used by NB
 pip install torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
+pip install opencv-python-headless
 """,
     },
     "metadata": {
@@ -86,6 +87,7 @@ pip install torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url http
         "paper_link": "https://arxiv.org/pdf/2401.06003",
         "link": "https://lfranke.github.io/trips/",
     },
+    "id": "trips",
 }
 
-register(TRIPSSpec, name="trips")
+# register(TRIPSSpec, name="trips")

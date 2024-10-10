@@ -1,14 +1,14 @@
 import os
-from ..registry import MethodSpec, register
+from nerfbaselines import register, MethodSpec
 
 
-paper_results = {
+_paper_results = {
     # TODO: ...
 }
 
 
 register({
-    "method": ".nerfonthego:NeRFOnthego",
+    "method_class": ".nerfonthego:NeRFOnthego",
     "conda": {
         "environment_name": os.path.split(__file__[:-len("_spec.py")])[-1].replace("_", "-"),
         "python_version": "3.9",
@@ -29,6 +29,10 @@ python -m pip install -r requirements.txt
 git clone https://github.com/rmbrualla/pycolmap.git ./internal/pycolmap
 conda develop "$PWD/internal/pycolmap"
 conda develop "$PWD/internal/pycolmap/pycolmap"
+
+# Install NB dependencies to allow metrics computation
+pip install torch==2.2.0 torchvision==0.17.0 'numpy<2.0.0' --index-url https://download.pytorch.org/whl/cu118
+if ! python -c 'import cv2'; then pip install opencv-python-headless; fi
 """,
     },
     "metadata": {
@@ -38,7 +42,8 @@ conda develop "$PWD/internal/pycolmap/pycolmap"
         "paper_authors": ["Weining Ren", "Zihan Zhu", "Boyang Sun", "Julia Chen", "Marc Pollefeys", "Songyou Peng"],
         "paper_link": "https://arxiv.org/pdf/2405.18715.pdf",
         "link": "https://rwn17.github.io/nerf-on-the-go/",
-        "paper_results": paper_results,
+        "paper_results": _paper_results,
     },
-}, name="nerfonthego")
+    "id": "nerfonthego",
+})
 

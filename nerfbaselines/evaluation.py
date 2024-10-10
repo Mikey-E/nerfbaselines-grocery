@@ -1,3 +1,6 @@
+import importlib
+from contextlib import contextmanager
+import zipfile
 import tarfile
 import time
 import io
@@ -5,45 +8,51 @@ from functools import wraps
 import logging
 import os
 import typing
-from typing import Dict, Union, Iterable, TypeVar, Optional, cast, List
+from typing import Dict, Union, Iterable, TypeVar, Optional, cast, List, Tuple, BinaryIO, Any
 import numpy as np
 import json
 from pathlib import Path
 
 from tqdm import tqdm
 
-from .datasets import new_dataset
+
+import nerfbaselines
 from .utils import (
-    read_image, 
-    convert_image_dtype, 
-    run_on_host,
+    apply_colormap,
     image_to_srgb,
-    save_image,
     visualize_depth,
-    assert_not_none,
+    convert_image_dtype, 
 )
-from .types import (
-    Literal, 
+from .backends import run_on_host
+from . import (
     Dataset,
     RenderOutput, 
     EvaluationProtocol, 
     Cameras,
     Method,
     Trajectory,
+    RenderOptions,
     camera_model_to_int,
     new_cameras,
+    new_dataset,
 )
-from .registry import build_evaluation_protocol
 from .io import (
     open_any_directory, 
     deserialize_nb_info, 
     get_predictions_sha,
     get_method_sha,
     save_evaluation_results,
-    save_predictions,
+    _save_predictions_iterate,
+    save_image,
+    read_image, 
 )
+from .datasets import dataset_index_select
 from . import metrics
 from . import cameras as _cameras
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
 try:
     from typeguard import suppress_type_checks
 except ImportError:
@@ -52,6 +61,27 @@ except ImportError:
 
 OutputType = Literal["color", "depth"]
 T = TypeVar("T")
+
+
+def _assert_not_none(value: Optional[T]) -> T:
+    assert value is not None
+    return value
+
+
+def _import_type(name: str) -> Any:
+    package, name = name.split(":")
+    obj: Any = importlib.import_module(package)
+    for p in name.split("."):
+        obj = getattr(obj, p)
+    return obj
+
+
+def build_evaluation_protocol(id: str) -> 'EvaluationProtocol':
+    spec = nerfbaselines.get_evaluation_protocol_spec(id)
+    if spec is None:
+        raise RuntimeError(f"Could not find evaluation protocol {id} in registry. Supported protocols: {','.join(nerfbaselines.get_supported_evaluation_protocols())}")
+    return cast('EvaluationProtocol', _import_type(spec["evaluation_protocol_class"])())
+
 
 
 @typing.overload
@@ -87,6 +117,14 @@ def compute_metrics(pred, gt, *, reduce: bool = True, run_lpips_vgg: bool = Fals
     if run_lpips_vgg:
         out["lpips_vgg"] = reduction(metrics.lpips_vgg(gt, pred))
     return out
+
+
+def path_is_video(path: str) -> bool:
+    return (path.endswith(".mp4") or 
+            path.endswith(".avi") or 
+            path.endswith(".gif") or 
+            path.endswith(".webp") or
+            path.endswith(".mov"))
 
 
 def evaluate(predictions: str, 
@@ -144,9 +182,11 @@ def evaluate(predictions: str,
 
             # Evaluate the prediction
             with tqdm(desc=description, dynamic_ncols=True, total=len(relpaths)) as progress:
-                def collect_metrics_lists(iterable: Iterable[Dict[str, T]]) -> Iterable[Dict[str, T]]:
-                    for data in iterable:
-                        for k, v in data.items():
+                def collect_metrics_lists():
+                    for i, pred in enumerate(read_predictions()):
+                        dataset_slice = dataset_index_select(dataset, [i])
+                        metrics = evaluation_protocol.evaluate(pred, dataset_slice)
+                        for k, v in metrics.items():
                             if k not in metrics_lists:
                                 metrics_lists[k] = []
                             metrics_lists[k].append(v)
@@ -154,11 +194,10 @@ def evaluate(predictions: str,
                         if "psnr" in metrics_lists:
                             psnr_val = np.mean(metrics_lists["psnr"][-1])
                             progress.set_postfix(psnr=f"{psnr_val:.4f}")
-                        yield data
+                        yield metrics
 
-                metrics = evaluation_protocol.accumulate_metrics(
-                    collect_metrics_lists(evaluation_protocol.evaluate(read_predictions(), dataset))
-                )
+                metrics = evaluation_protocol.accumulate_metrics(collect_metrics_lists())
+
 
         predictions_sha, ground_truth_sha = get_predictions_sha(str(predictions_path))
 
@@ -183,26 +222,27 @@ class DefaultEvaluationProtocol(EvaluationProtocol):
     def __init__(self):
         pass
 
-    def render(self, method: Method, dataset: Dataset) -> Iterable[RenderOutput]:
+    def render(self, method: Method, dataset: Dataset, *, options=None) -> RenderOutput:
+        dataset["cameras"].item()  # Assert there is only one camera
         info = method.get_info()
         supported_camera_models = info.get("supported_camera_models", frozenset(("pinhole",)))
         render = with_supported_camera_models(supported_camera_models)(method.render)
-        yield from render(dataset["cameras"])
+        return render(dataset["cameras"].item(), options=options)
 
     def get_name(self):
         return self._name
 
-    def evaluate(self, predictions: Iterable[RenderOutput], dataset: Dataset) -> Iterable[Dict[str, Union[float, int]]]:
+    def evaluate(self, predictions: RenderOutput, dataset: Dataset) -> Dict[str, Union[float, int]]:
+        assert len(dataset["images"]) == 1, "There must be exactly one image in the dataset"
         background_color = dataset["metadata"].get("background_color")
         color_space = dataset["metadata"]["color_space"]
-        for i, prediction in enumerate(predictions):
-            pred = prediction["color"]
-            gt = dataset["images"][i]
-            pred = image_to_srgb(pred, np.uint8, color_space=color_space, background_color=background_color)
-            gt = image_to_srgb(gt, np.uint8, color_space=color_space, background_color=background_color)
-            pred_f = convert_image_dtype(pred, np.float32)
-            gt_f = convert_image_dtype(gt, np.float32)
-            yield compute_metrics(pred_f[None], gt_f[None], run_lpips_vgg=self._lpips_vgg, reduce=True)
+        pred = predictions["color"]
+        gt = dataset["images"][0]
+        pred = image_to_srgb(pred, np.uint8, color_space=color_space, background_color=background_color)
+        gt = image_to_srgb(gt, np.uint8, color_space=color_space, background_color=background_color)
+        pred_f = convert_image_dtype(pred, np.float32)
+        gt_f = convert_image_dtype(gt, np.float32)
+        return compute_metrics(pred_f[None], gt_f[None], run_lpips_vgg=self._lpips_vgg, reduce=True)
 
     def accumulate_metrics(self, metrics: Iterable[Dict[str, Union[float, int]]]) -> Dict[str, Union[float, int]]:
         acc = {}
@@ -218,7 +258,7 @@ class NerfEvaluationProtocol(DefaultEvaluationProtocol):
     _lpips_vgg = True
 
 
-TRender = TypeVar("TRender", bound=typing.Callable[..., Iterable[RenderOutput]])
+TRender = TypeVar("TRender", bound=typing.Callable[..., RenderOutput])
 
 
 def with_supported_camera_models(supported_camera_models):
@@ -226,26 +266,19 @@ def with_supported_camera_models(supported_camera_models):
 
     def decorator(render: TRender) -> TRender:
         @wraps(render)
-        def _render(cameras: Cameras, *args, **kwargs):
-            assert len(cameras) > 0, "No cameras"
-            original_cameras = cameras
-            needs_distort = []
-            undistorted_cameras_list: List[Cameras] = []
-            for cam in cameras:
-                if cam.camera_types.item() not in supported_cam_models:
-                    needs_distort.append(True)
-                    undistorted_cameras_list.append(_cameras.undistort_camera(cam)[None])
-                else:
-                    needs_distort.append(False)
-                    undistorted_cameras_list.append(cam[None])
-            undistorted_cameras = undistorted_cameras_list[0].cat(undistorted_cameras_list)
-            for x, distort, cam, ucam in zip(render(undistorted_cameras, *args, **kwargs), needs_distort, original_cameras, undistorted_cameras):
-                if distort:
-                    x = cast(RenderOutput, 
-                             {k: _cameras.warp_image_between_cameras(ucam, cam, cast(np.ndarray, v)) for k, v in x.items()})
-                yield x
-        return cast(TRender, _render)
+        def _render(camera: Cameras, *args, **kwargs):
+            cam = camera.item()  # Assert there is only one camera
+            original_camera = None
+            if cam.camera_models.item() not in supported_cam_models:
+                original_camera = cam
+                cam = _cameras.undistort_camera(cam)
 
+            out = render(cam, *args, **kwargs)
+            if original_camera is not None:
+                out = cast(RenderOutput, {
+                    k: _cameras.warp_image_between_cameras(cam, original_camera, cast(np.ndarray, v)) for k, v in out.items()})
+            return out
+        return cast(TRender, _render)
     return decorator
 
 
@@ -262,14 +295,14 @@ def render_all_images(
     logging.info(f"Rendering images with evaluation protocol {evaluation_protocol.get_name()}")
     background_color =  dataset["metadata"].get("background_color", None)
     if background_color is not None:
-        background_color = convert_image_dtype(background_color, np.uint8)
+        background_color = convert_image_dtype(np.array(background_color), np.uint8)
     if nb_info is None:
         nb_info = {}
     else:
         nb_info = nb_info.copy()
         dataset_colorspace = dataset["metadata"].get("color_space", "srgb")
         assert dataset_colorspace == nb_info.get("color_space", "srgb"), \
-            f"Dataset color space {dataset_colorspace} != method color space {nb_info['color_space']}"
+            f"Dataset color space {dataset_colorspace} != method color space {nb_info.get('color_space')}"
         if "dataset_background_color" in nb_info:
             info_background_color = nb_info.get("dataset_background_color")
             if info_background_color is not None:
@@ -279,11 +312,15 @@ def render_all_images(
     nb_info["checkpoint_sha256"] = get_method_sha(method)
     nb_info["evaluation_protocol"] = evaluation_protocol.get_name()
 
-    with tqdm(desc=description, total=len(dataset["image_paths"]), dynamic_ncols=True) as progress:
-        for val in save_predictions(output,
-                                    evaluation_protocol.render(method, dataset),
-                                    dataset=dataset,
-                                    nb_info=nb_info):
+    def _render_all():
+        for i in range(len(dataset["cameras"])):
+            yield evaluation_protocol.render(method, dataset_index_select(dataset, [i]))
+
+    with tqdm(desc=description, total=len(dataset["cameras"]), dynamic_ncols=True) as progress:
+        for val in _save_predictions_iterate(output,
+                                             _render_all(),
+                                             dataset=dataset,
+                                             nb_info=nb_info):
             progress.update(1)
             yield val
 
@@ -295,59 +332,170 @@ def render_frames(
     fps: float,
     embeddings: Optional[List[np.ndarray]] = None,
     description: str = "rendering frames",
-    output_type: OutputType = "color",
+    output_names: Tuple[str, ...] = ("color",),
     nb_info: Optional[dict] = None,
 ) -> None:
-    output = Path(output)
+    output = str(output) if isinstance(output, Path) else output
     assert cameras.image_sizes is not None, "cameras.image_sizes must be set"
     info = method.get_info()
     render = with_supported_camera_models(info.get("supported_camera_models", frozenset(("pinhole",))))(method.render)
     color_space = "srgb"
     background_color = nb_info.get("background_color") if nb_info is not None else None
     expected_scene_scale = nb_info.get("expected_scene_scale") if nb_info is not None else None
+    output_types_map = {
+        (x if isinstance(x, str) else x["name"]): (x if isinstance(x, str) else x.get("type", x["name"]))
+        for x in info.get("supported_outputs", ["color"])
+    }
+    for output_name in output_names:
+        if output_name not in output_types_map:
+            raise ValueError(f"Output type {output_name} not supported by method. Supported types: {list(output_types_map.keys())}")
 
     def _predict_all(allow_transparency=True):
-        predictions = render(cameras, embeddings=embeddings)
-        for i, pred in enumerate(tqdm(predictions, desc=description, total=len(cameras), dynamic_ncols=True)):
-            pred_image = image_to_srgb(pred["color"], np.uint8, color_space=color_space, allow_alpha=allow_transparency, background_color=background_color)
-            if output_type == "color":
-                yield pred_image
-            elif output_type == "depth":
-                assert "depth" in pred, "Method does not output depth"
-                depth_rgb = visualize_depth(pred["depth"], near_far=cameras.nears_fars[i] if cameras.nears_fars is not None else None, expected_scale=expected_scene_scale)
-                yield convert_image_dtype(depth_rgb, np.uint8)
-            else:
-                raise RuntimeError(f"Output type {output_type} is not supported.")
+        for i in tqdm(range(len(cameras)), desc=description, total=len(cameras), dynamic_ncols=True):
+            options: RenderOptions = {
+                "output_type_dtypes": {"color": "uint8"},
+                "embedding": (embeddings[i] if embeddings is not None else None),
+            }
+            pred = render(cameras[i], options=options)
+            out = {}
+            for output_name in output_names:
+                output_type = output_types_map[output_name]
+                if output_type == "color":
+                    pred_image = image_to_srgb(pred[output_name], np.uint8, 
+                                               color_space=color_space, 
+                                               allow_alpha=allow_transparency, 
+                                               background_color=background_color)
+                    out[output_name] = pred_image
+                elif output_type == "depth":
+                    depth_rgb = visualize_depth(
+                            pred[output_name], 
+                            near_far=cameras.nears_fars[i] if cameras.nears_fars is not None else None, 
+                            expected_scale=expected_scene_scale)
+                    out[output_name] = convert_image_dtype(depth_rgb, np.uint8)
+                elif output_type == "accumulation":
+                    out[output_name] = convert_image_dtype(apply_colormap(pred[output_name], pallete="coolwarm"), np.uint8)
+                else:
+                    raise RuntimeError(f"Output type {output_type} is not supported.")
+            yield out
 
-    if str(output).endswith(".tar.gz"):
-        with tarfile.open(output, "w:gz") as tar:
-            for i, frame in enumerate(_predict_all()):
+    @contextmanager
+    def _zip_writer(output):
+        with zipfile.ZipFile(output, "w") as zip:
+            i = 0
+            def _write_frame(frame):
+                nonlocal i
                 rel_path = f"{i:05d}.png"
-                tarinfo = tarfile.TarInfo(name=rel_path)
-                tarinfo.mtime = int(time.time())
-                with io.BytesIO() as f:
-                    f.name = rel_path
-                    tarinfo.size = f.tell()
-                    f.seek(0)
-                    save_image(f, frame)
-                    tar.addfile(tarinfo=tarinfo, fileobj=f)
-    elif str(output).endswith(".mp4") or str(output).endswith(".gif"):
+                framedata = frame if isinstance(frame, dict) else {None: frame}
+                for key, image in framedata.items():
+                    lpath = f"{key}/{rel_path}" if key is not None else rel_path
+
+                    date_time = time.localtime(time.time())[:6]
+                    zinfo = zipfile.ZipInfo(lpath, date_time)
+                    zinfo.compress_type = zip.compression
+                    if hasattr(zip, "_compresslevel"):
+                        zinfo._compresslevel = zip.compresslevel  # type: ignore
+                    zinfo.external_attr = 0o600 << 16     # ?rw-------
+
+                    with zip.open(zinfo, 'w') as dest:
+                        dest.name = lpath  # type: ignore
+                        save_image(cast(BinaryIO, dest), image)
+                i += 1
+            yield _write_frame
+
+    @contextmanager
+    def _targz_writer(output):
+        with tarfile.open(output, "w:gz") as tar:
+            i = 0
+            def _write_frame(frame):
+                nonlocal i
+                rel_path = f"{i:05d}.png"
+                framedata = frame if isinstance(frame, dict) else {None: frame}
+                for key, image in framedata.items():
+                    lpath = f"{key}/{rel_path}" if key is not None else rel_path
+                    tarinfo = tarfile.TarInfo(name=lpath)
+                    tarinfo.mtime = int(time.time())
+                    with io.BytesIO() as f:
+                        f.name = lpath  # type: ignore
+                        save_image(f, image)
+                        tarinfo.size = f.tell()
+                        f.seek(0)
+                        tar.addfile(tarinfo=tarinfo, fileobj=f)
+                i += 1
+            yield _write_frame
+
+    vidwriter = 0
+
+    @contextmanager
+    def _video_writer(output):
+        nonlocal vidwriter
         # Handle video
         import mediapy
 
-        w, h = cameras.image_sizes[0]
-        codec = 'h264'
-        if str(output).endswith(".gif"):
-            codec = "gif"
-        with mediapy.VideoWriter(output, (h, w), metadata=mediapy.VideoMetadata(len(cameras), (h, w), fps, bps=None), fps=fps, codec=codec) as writer:
-            for i, frame in enumerate(_predict_all(allow_transparency=False)):
+        codec = 'gif' if output.endswith(".gif") else "h264"
+        writer = None
+        try:
+            def _add_frame(frame):
+                nonlocal writer
+                if isinstance(frame, dict):
+                    frame = np.concatenate(list(frame.values()), axis=1)
+                if writer is None:
+                    h, w = frame.shape[:-1]
+
+                    writer = mediapy.VideoWriter(output, (h, w), fps=fps, codec=codec)
+                    writer.__enter__()
                 writer.add_image(frame)
-    else:
+            yield _add_frame
+        finally:
+            if writer is not None:
+                writer.__exit__(None, None, None)
+                writer = None
+
+    @contextmanager
+    def _folder_writer(output):
         os.makedirs(output, exist_ok=True)
-        for i, frame in enumerate(_predict_all()):
+        i = 0
+        def _add_frame(frame):
+            nonlocal i
             rel_path = f"{i:05d}.png"
-            with open(os.path.join(output, rel_path), "wb") as f:
-                save_image(f, frame)
+            if isinstance(frame, dict):
+                for key, image in frame.items():
+                    os.makedirs(os.path.join(output, key), exist_ok=True)
+                    with open(os.path.join(output, key, rel_path), "wb") as f:
+                        save_image(f, image)
+            else:
+                with open(os.path.join(output, rel_path), "wb") as f:
+                    save_image(f, frame)
+            i += 1
+        yield _add_frame
+
+    writers = {}
+    try:
+        for output_name in output_names:
+            loutput = output.format(output=output_name)
+            if loutput not in writers:
+                if path_is_video(loutput):
+                    writer_obj = _video_writer(loutput)
+                elif loutput.endswith(".zip"):
+                    writer_obj = _zip_writer(loutput)
+                elif loutput.endswith(".tar.gz"):
+                    writer_obj = _targz_writer(loutput)
+                else:
+                    writer_obj = _folder_writer(loutput)
+                writers[loutput] = (writer_obj, writer_obj.__enter__(), (output_name,))
+            else:
+                writer_obj, writer, _outs = writers[loutput]
+                writers[loutput] = (writer_obj, writer, _outs + (output_name,))
+
+        for frame in _predict_all():
+            for _, writer, _outs in writers.values():
+                if len(_outs) == 1:
+                    writer(frame[_outs[0]])
+                else:
+                    writer({name: frame[name] for name in _outs})
+    finally:
+        # Release all writers
+        for writer_obj, _, _ in reversed(list(writers.values())):
+            writer_obj.__exit__(None, None, None)
 
 
 def trajectory_get_cameras(trajectory: Trajectory) -> Cameras:
@@ -355,11 +503,11 @@ def trajectory_get_cameras(trajectory: Trajectory) -> Cameras:
         raise NotImplementedError("Only pinhole camera model is supported")
     poses = np.stack([x["pose"] for x in trajectory["frames"]])
     intrinsics = np.stack([x["intrinsics"] for x in trajectory["frames"]])
-    camera_types = np.array([camera_model_to_int(trajectory["camera_model"])]*len(poses), dtype=np.int32)
+    camera_models = np.array([camera_model_to_int(trajectory["camera_model"])]*len(poses), dtype=np.int32)
     image_sizes = np.array([list(trajectory["image_size"])]*len(poses), dtype=np.int32)
     return new_cameras(poses=poses, 
                        intrinsics=intrinsics, 
-                       camera_types=camera_types, 
+                       camera_models=camera_models, 
                        image_sizes=image_sizes,
                        distortion_parameters=np.zeros((len(poses), 0), dtype=np.float32),
                        nears_fars=None, 
@@ -375,7 +523,7 @@ def trajectory_get_embeddings(method: Method, trajectory: Trajectory) -> Optiona
         if appearance.get("embedding") is not None:
             appearance_embeddings[i] = appearance.get("embedding")
         elif appearance.get("embedding_train_index") is not None:
-            appearance_embeddings[i] = method.get_train_embedding(assert_not_none(appearance.get("embedding_train_index")))
+            appearance_embeddings[i] = method.get_train_embedding(_assert_not_none(appearance.get("embedding_train_index")))
     if all(x is None for x in appearance_embeddings):
         return None
     if not all(x is not None for x in appearance_embeddings):
@@ -392,4 +540,40 @@ def trajectory_get_embeddings(method: Method, trajectory: Trajectory) -> Optiona
         embedding = (frame.get("appearance_weights") @ appearance_embeddings_np).astype(appearance_embeddings_np.dtype)
         out.append(embedding)
     return out
+
+
+@contextmanager
+def run_inside_eval_container(backend_name: Optional[str] = None):
+    """
+    Ensures PyTorch is available to compute extra metrics (lpips)
+    """
+    from .backends import get_backend
+    try:
+        import torch as _
+        yield None
+        return
+    except ImportError:
+        pass
+
+    logging.warning("PyTorch is not available in the current environment, we will create a new environment to compute extra metrics (lpips)")
+    if backend_name is None:
+        backend_name = os.environ.get("NERFBASELINES_BACKEND", None)
+    backend = get_backend({
+        "id": "metrics",
+        "method_class": "base",
+        "conda": {
+            "environment_name": "_metrics", 
+            "install_script": """
+# Install dependencies
+pip install \
+    opencv-python==4.9.0.80 \
+    torch==2.2.0 \
+    torchvision==0.17.0 \
+    'numpy<2.0.0' \
+    --extra-index-url https://download.pytorch.org/whl/cu118
+"""
+        }}, backend=backend_name)
+    with backend:
+        backend.install()
+        yield None
 

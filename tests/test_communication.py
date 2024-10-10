@@ -1,12 +1,12 @@
+from functools import partial
 from unittest import mock
 import contextlib
 import pytest
 from typing import Iterable
 import numpy as np
 from time import sleep
-from nerfbaselines import Method, MethodInfo, RenderOutput, ModelInfo
+from nerfbaselines import Method, MethodInfo, RenderOutput, ModelInfo, new_cameras
 from nerfbaselines.utils import CancellationToken, CancelledException
-from nerfbaselines.types import new_cameras
 
 
 def test_render(use_remote_method):
@@ -16,40 +16,35 @@ def test_render(use_remote_method):
 
         @classmethod
         def get_method_info(cls) -> MethodInfo:
-            out: MethodInfo = {"name": "_test", "required_features": frozenset(), "supported_camera_models": frozenset()}
+            out: MethodInfo = {"method_id": "_test", "required_features": frozenset(), "supported_camera_models": frozenset()}
             return out
-
-        def optimize_embeddings(self, *args, **kwargs):
-            raise NotImplementedError()
 
         def get_info(self) -> ModelInfo:
             return {**self.get_method_info(), "num_iterations": 13}
 
-        def render(self, cameras, *, embeddings=None, options=None) -> Iterable[RenderOutput]:
-            yield {"color": np.full(tuple(), 23)}
-            yield {"color": np.full(tuple(), 26)}
+        def render(self, camera, *, options=None) -> RenderOutput:
+            del camera, options
+            return {"color": np.full(tuple(), 23)}
 
-        def train_iteration(self, step: int):
-            pass
+        def train_iteration(self, step: int) -> dict:
+            del step
+            raise NotImplementedError()
 
         def save(self, path):
-            pass
-
-        def get_train_embedding(self, *args, **kwargs):
-            raise NotImplementedError()
+            del path
 
     with use_remote_method(TestMethodRenderCancellable) as remote_method_cls:
         remote_method = remote_method_cls()
         all_cameras = new_cameras(
             poses=np.eye(4, dtype=np.float32)[None, :3, :4],
             intrinsics=np.zeros((1, 4), dtype=np.float32),
-            camera_types=np.zeros((1,), dtype=np.int32),
+            camera_models=np.zeros((1,), dtype=np.int32),
             distortion_parameters=np.zeros((1, 6), dtype=np.float32),
             image_sizes=np.array((64, 48), dtype=np.int32),
             nears_fars=None,
         )
-        vals = [int(x["color"]) for x in remote_method.render(all_cameras)]
-        assert vals == [23, 26]
+        val = int(remote_method.render(all_cameras[0])["color"])
+        assert val == 23
 
 
 @pytest.fixture
@@ -66,27 +61,26 @@ def use_remote_method():
 
                 @classmethod
                 def get_method_info(cls) -> MethodInfo:
-                    out: MethodInfo = {"name": "_test"}
+                    out: MethodInfo = {"method_id": "_test"}
                     return out
 
                 def get_info(self) -> ModelInfo:
                     return {**self.get_method_info(), "num_iterations": 13}
 
-                def optimize_embeddings(self, *args, **kwargs):
-                    raise NotImplementedError()
-
-                def render(self, cameras, *, embeddings=None, options=None) -> Iterable[RenderOutput]:
-                    for i in range(100):
-                        sleep(0.001)
-                        yield {"color": np.full(tuple(), i)}
+                def render(self, camera, *, options=None) -> RenderOutput:
+                    del camera, options
+                    return {"color": np.full(tuple(), 0)}
 
                 def setup_train(self, train_dataset, **kwargs):
+                    del train_dataset, kwargs
                     pass
 
-                def train_iteration(self, step: int):
-                    pass
+                def train_iteration(self, step: int) -> dict:
+                    del step
+                    raise NotImplementedError()
 
                 def save(self, path):
+                    del path
                     pass
 
             method = TestMethod
@@ -102,14 +96,13 @@ def use_remote_method():
                 backend.instance_call = lambda *args, **kwargs: intercept(oci, *args, **kwargs)
                 ocs = backend.static_call
                 backend.static_call = lambda *args, **kwargs: intercept(ocs, *args, **kwargs)
-            remote_method = backend.wrap(method)
-            yield remote_method
+            yield partial(backend.static_call, f"{method.__module__}:{method.__name__}")
 
     return wrap
 
 
 def test_get_resource_utilization(use_remote_method):
-    from nerfbaselines.utils import get_resources_utilization_info
+    from nerfbaselines.training import get_resources_utilization_info
 
     called = False
     def intercept(callback, fn, *args, **kwargs):
@@ -141,71 +134,3 @@ def test_compute_metrics(use_remote_method):
         assert isinstance(info, dict)
 
     assert called, "intercept was not called"
-
-
-def test_render_cancellable(use_remote_method):
-    from nerfbaselines.utils import cancellable
-
-    class TestMethodRenderCancellable(Method):
-        def __init__(self):
-            pass
-
-        def optimize_embeddings(self, *args, **kwargs):
-            raise NotImplementedError()
-
-        @classmethod
-        def get_method_info(cls) -> MethodInfo:
-            out: MethodInfo = {
-                "name": "_test",
-                "required_features": frozenset(("color",)),
-                "supported_camera_models": frozenset(("opencv",))
-            }
-            return out
-
-        def get_info(self) -> ModelInfo:
-            return {**self.get_method_info(), "num_iterations": 13}
-
-        @cancellable
-        def render(self, cameras, *, embeddings=None, options=None) -> Iterable[RenderOutput]:
-            for i in range(400):
-                sleep(0.001)
-                yield {"color": np.full(tuple(), i)}
-
-        def train_iteration(self, step: int):
-            pass
-
-        def save(self, path):
-            pass
-
-        def get_train_embedding(self, *args, **kwargs):
-            raise NotImplementedError()
-
-
-    with use_remote_method(TestMethodRenderCancellable) as remote_method_cls:
-        remote_method = remote_method_cls()
-        all_cameras = new_cameras(
-            poses=np.eye(4, dtype=np.float32)[None, :3, :4],
-            intrinsics=np.zeros((1, 4), dtype=np.float32),
-            camera_types=np.zeros((1,), dtype=np.int32),
-            distortion_parameters=np.zeros((1, 6), dtype=np.float32),
-            image_sizes=np.array((64, 48), dtype=np.int32),
-            nears_fars=None,
-        )
-        cancelation_token = CancellationToken()
-        vals = []
-        with pytest.raises(CancelledException), cancelation_token:
-            for vw in remote_method.render(all_cameras):
-                v = int(vw["color"])
-                vals.append(v)
-                if v > 3:
-                    cancelation_token.cancel()
-        assert len(vals) < 100
-
-        vals = []
-        with pytest.raises(CancelledException), cancelation_token:
-            for vw in cancellable(remote_method.render)(all_cameras):
-                v = int(vw["color"])
-                vals.append(v)
-                if v > 3:
-                    cancelation_token.cancel()
-        assert len(vals) < 100

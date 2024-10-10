@@ -4,11 +4,14 @@ import logging
 import numpy as np
 from glob import glob
 from tqdm import trange
-from typing import Optional, List, Tuple, Union, cast
-from nerfbaselines.types import camera_model_to_int, new_cameras, FrozenSet, DatasetFeature, Literal
-from nerfbaselines.datasets import DatasetNotFoundError, new_dataset, dataset_index_select
-from nerfbaselines.datasets._common import get_default_viewer_transform
+from typing import Optional, List, Tuple, Union, cast, FrozenSet
+from nerfbaselines import camera_model_to_int, new_cameras, DatasetFeature, DatasetNotFoundError, new_dataset
+from nerfbaselines.datasets import dataset_index_select
 from PIL import Image
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
 
 
 LOADER_NAME = "bundler"
@@ -76,7 +79,7 @@ def load_bundler_file(path: str,
     # Read images
     intrinsics = np.zeros((num_images, 4), dtype=np.float32)
     distortion_params = np.zeros((num_images, 6), dtype=np.float32)
-    camera_types = np.full((num_images,), camera_model_to_int("pinhole"), dtype=np.uint8)
+    camera_models = np.full((num_images,), camera_model_to_int("pinhole"), dtype=np.uint8)
     c2ws = np.zeros((num_images, 3, 4), dtype=np.float32)
     image_sizes = np.zeros((num_images, 2), dtype=np.int32)
     for img in trange(0, num_images, desc="Loading bundler file"):
@@ -103,7 +106,7 @@ def load_bundler_file(path: str,
             if all((props.get(x, 0.0) == 0.0) for x in "k1 k2 k3 k4 p1 p2".split()):
                 camera_model_ = camera_model_to_int("pinhole")
                 logging.debug(f"Camera {img} has all distortion parameters set to 0, switching to pinhole camera model")
-        camera_types[img] = camera_model_
+        camera_models[img] = camera_model_
 
         if props.get("filename") is not None:
             image_list[img] = filename = props.pop("filename")
@@ -169,7 +172,7 @@ def load_bundler_file(path: str,
     cameras = new_cameras(
         poses=c2ws,
         intrinsics=intrinsics,
-        camera_types=camera_types,
+        camera_models=camera_models,
         distortion_parameters=distortion_params,
         image_sizes=image_sizes,
         nears_fars=None,
@@ -212,7 +215,6 @@ def load_bundler_dataset(path: str,
                                                                                coordinate_system=coordinate_system,
                                                                                camera_model=camera_model)
     indices, train_indices = get_split_and_train_indices(image_names, path, split)
-    viewer_transform, viewer_pose = get_default_viewer_transform(all_cameras[train_indices].poses, None)
     dataset = new_dataset(
         cameras=all_cameras,
         image_paths=[os.path.join(images_root, x) for x in image_names],
@@ -222,16 +224,17 @@ def load_bundler_dataset(path: str,
         points3D_xyz=points3D_xyz if load_points else None,
         points3D_rgb=points3D_rgb if load_points else None,
         metadata={
-            "name": LOADER_NAME,
+            "id": None,
             "color_space": "srgb",
             "evaluation_protocol": "default",
-            "viewer_transform": viewer_transform,
-            "viewer_initial_pose": viewer_pose,
         })
     if indices is not None:
         dataset = dataset_index_select(dataset, indices)
 
     return dataset
+
+
+__all__ = ["load_bundler_dataset"]
 
 
 if __name__ == "__main__":

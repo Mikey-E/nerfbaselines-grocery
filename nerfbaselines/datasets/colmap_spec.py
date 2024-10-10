@@ -1,7 +1,7 @@
-from ..registry import register
+from nerfbaselines import register
 
 
-register(name="colmap", spec={
-    "load_dataset_function": ".colmap:load_colmap_dataset",
-    "priority": 100,
+register({
+    "id": "colmap",
+    "load_dataset_function": "nerfbaselines.datasets.colmap:load_colmap_dataset",
 })

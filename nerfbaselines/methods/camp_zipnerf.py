@@ -7,34 +7,34 @@ import logging
 import os
 import io
 import base64
-from typing import Optional, Iterable, Sequence
+from typing import Optional, Any
 from pathlib import Path
 import numpy as np
 import functools
 import gc
-from nerfbaselines.types import Method, MethodInfo, ModelInfo, Dataset, OptimizeEmbeddingsOutput
-from nerfbaselines.types import Cameras, camera_model_to_int, RenderOptions, RenderOutput
+from nerfbaselines import Method, MethodInfo, ModelInfo, Dataset
+from nerfbaselines import Cameras, camera_model_to_int, RenderOptions, RenderOutput
 try:
     # We need to import torch before jax to load correct CUDA libraries
-    import torch
+    import torch  # type: ignore
 except ImportError:
     torch = None
 
-import gin
-import gin.config
-import chex
-import jax
-from jax import random
-import jax.numpy as jnp
-import flax
-from flax.training import checkpoints
-from internal import configs
-from internal import models
-from internal import train_utils  # pylint: disable=unused-import
-from internal import utils
-from internal import datasets
-from internal import camera_utils
-from internal.camera_utils import pad_poses, unpad_poses
+import gin  # type: ignore
+import gin.config  # type: ignore
+import chex  # type: ignore
+import jax  # type: ignore
+from jax import random  # type: ignore
+import jax.numpy as jnp  # type: ignore
+import flax  # type: ignore
+from flax.training import checkpoints  # type: ignore
+from internal import configs  # type: ignore
+from internal import models  # type: ignore
+from internal import train_utils  # type: ignore
+from internal import utils  # type: ignore
+from internal import datasets  # type: ignore
+from internal import camera_utils  # type: ignore
+from internal.camera_utils import pad_poses, unpad_poses  # type: ignore
 
 
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.65"
@@ -80,13 +80,13 @@ def flatten_data(images):
 
 
 def convert_posedata(dataset: Dataset):
-    camera_types = dataset["cameras"].camera_types
-    assert np.all(camera_types == camera_types[:1]), "Currently, all camera types must be the same for the ZipNeRF method"
+    camtypes = dataset["cameras"].camera_models
+    assert np.all(camtypes == camtypes[:1]), "Currently, all camera types must be the same for the ZipNeRF method"
     camtype = {
         camera_model_to_int("pinhole"): camera_utils.ProjectionType.PERSPECTIVE,
         camera_model_to_int("opencv"): camera_utils.ProjectionType.PERSPECTIVE,
         camera_model_to_int("opencv_fisheye"): camera_utils.ProjectionType.FISHEYE,
-    }[camera_types[0]]
+    }[camtypes[0]]
 
     names = []
     camtoworlds = []
@@ -168,7 +168,7 @@ def gin_config_to_dict(config_str: str):
 
 
 class MNDataset(datasets.Dataset):
-    def __init__(self, dataset: Dataset, config, split, dataparser_transform=None, verbose=True):
+    def __init__(self, dataset, config, split, dataparser_transform=None, verbose=True):
         self.split = split
         self.dataset = dataset
         self.dataparser_transform = dataparser_transform
@@ -322,7 +322,6 @@ class MNDataset(datasets.Dataset):
 
 
 class CamP_ZipNeRF(Method):
-    _method_name: str = "camp_zipnerf"
     _camp: bool = False
 
     def __init__(self, 
@@ -342,11 +341,11 @@ class CamP_ZipNeRF(Method):
         self.render_eval_pfn = None
         self.rngs = None
         self.step = 0
-        self.state = None
+        self.state: Any = None
         self.cameras = None
         self.loss_threshold = None
         self.dataset = None
-        self.config = None
+        self.config: Any = None
         self.model = None
         self.opaque_background = True
         self._config_str = None
@@ -382,7 +381,7 @@ class CamP_ZipNeRF(Method):
 
     def _load_config(self, config_overrides=None):
         # Find the config files root
-        import train
+        import train  # type: ignore
 
         configs_path = str(Path(train.__file__).absolute().parent)
         gin.config.clear_config(clear_constants=True)
@@ -411,9 +410,8 @@ class CamP_ZipNeRF(Method):
 
     @classmethod
     def get_method_info(cls):
-        assert cls._method_name is not None, "Method was not properly registered"
         return MethodInfo(
-            name=cls._method_name,
+            method_id="",
             required_features=frozenset(("color",)),
             supported_camera_models=frozenset(("pinhole", "opencv", "opencv_fisheye")),
             supported_outputs=("color", "depth", "accumulation"),
@@ -513,6 +511,8 @@ class CamP_ZipNeRF(Method):
 
     def train_iteration(self, step: int):
         self.step = step
+        assert self.lr_fn is not None, "Must call setup_train before training"
+        assert self.train_pstep is not None, "Must call setup_train before training"
 
         with jax.profiler.StepTraceAnnotation("train", step_num=step):
             batch = next(self.p_raybatcher)
@@ -548,6 +548,9 @@ class CamP_ZipNeRF(Method):
         return out
 
     def save(self, path: str):
+        assert self._config_str is not None, "Config str must be set"
+        assert self._camera_type is not None, "camera_type must be set"
+
         path = os.path.abspath(str(path))
         if self.render_eval_pfn is None:
             self._setup_eval()
@@ -560,6 +563,7 @@ class CamP_ZipNeRF(Method):
 
         if jax.process_index() == 0:
             with Path(path).joinpath("dataparser_transform.json").open("w+") as fp:
+                assert self._dataparser_transform is not None, "dataparser_transform must be set"
                 meters_per_colmap, colmap_to_world_transform = self._dataparser_transform
                 fp.write(
                     json.dumps(
@@ -574,12 +578,15 @@ class CamP_ZipNeRF(Method):
             with (Path(path) / "config.gin").open("w+") as f:
                 f.write(self._config_str)
 
-    def render(self, cameras: Cameras, *, embeddings=None, options: Optional[RenderOptions] = None) -> Iterable[RenderOutput]:
+    def render(self, camera: Cameras, *, options: Optional[RenderOptions] = None) -> RenderOutput:
+        assert self.rngs is not None, "Must call setup_eval before rendering"
+        assert self.render_eval_pfn is not None, "Must call setup_eval before rendering"
         del options
         if self.render_eval_pfn is None:
             self._setup_eval()
-        if embeddings is not None:
-            raise NotImplementedError(f"Optimizing embeddings is not supported for method {self.get_method_info()['name']}")
+
+        cameras = camera.item()[None]
+
         # Test-set evaluation.
         # We reuse the same random number generator from the optimization step
         # here on purpose so that the visualization matches what happened in
@@ -602,68 +609,52 @@ class CamP_ZipNeRF(Method):
             dataparser_transform=self._dataparser_transform,
             verbose=False,
         )
-        cameras = jax.tree_util.tree_map(np_to_jax, test_dataset.cameras)
-        cameras_replicated = flax.jax_utils.replicate(cameras)
+        cams = jax.tree_util.tree_map(np_to_jax, test_dataset.cameras)
+        cams_replicated = flax.jax_utils.replicate(cams)
 
-        for i in range(len(poses)):
-            rays = test_dataset.generate_ray_batch(i).rays
-            rendering = models.render_image(
-                functools.partial(
-                    self.render_eval_pfn,
-                    eval_variables,
-                    1.0,
-                    cameras_replicated,
+        rays = test_dataset.generate_ray_batch(0).rays
+        rendering = models.render_image(
+            functools.partial(
+                self.render_eval_pfn,
+                eval_variables,
+                1.0,
+                cams_replicated,
+            ),
+            rays=rays,
+            rng=self.rngs[0],
+            config=self.config,
+            verbose=False,
+        )
+
+        # TODO: handle rawnerf color space
+        # if config.rawnerf_mode:
+        #     postprocess_fn = test_dataset["metadata"]['postprocess_fn']
+        # else:
+        accumulation = rendering["acc"]
+        eps = np.finfo(accumulation.dtype).eps
+        color = rendering["rgb"]
+        if not self.opaque_background:
+            color = xnp.concatenate(
+                (
+                    # Unmultiply alpha.
+                    xnp.where(accumulation[..., None] > eps, xnp.divide(color, xnp.clip(accumulation[..., None], eps, None)), xnp.zeros_like(rendering["rgb"])),
+                    accumulation[..., None],
                 ),
-                rays=rays,
-                rng=self.rngs[0],
-                config=self.config,
-                verbose=False,
+                -1,
             )
+        depth = rendering["distance_mean"]
+        assert len(accumulation.shape) == 2
+        assert len(depth.shape) == 2
+        return {
+            "color": np.array(color, dtype=np.float32),
+            "depth": np.array(depth, dtype=np.float32),
+            "accumulation": np.array(accumulation, dtype=np.float32),
+        }
 
-            # TODO: handle rawnerf color space
-            # if config.rawnerf_mode:
-            #     postprocess_fn = test_dataset["metadata"]['postprocess_fn']
-            # else:
-            accumulation = rendering["acc"]
-            eps = np.finfo(accumulation.dtype).eps
-            color = rendering["rgb"]
-            if not self.opaque_background:
-                color = xnp.concatenate(
-                    (
-                        # Unmultiply alpha.
-                        xnp.where(accumulation[..., None] > eps, xnp.divide(color, xnp.clip(accumulation[..., None], eps, None)), xnp.zeros_like(rendering["rgb"])),
-                        accumulation[..., None],
-                    ),
-                    -1,
-                )
-            depth = rendering["distance_mean"]
-            assert len(accumulation.shape) == 2
-            assert len(depth.shape) == 2
-            yield {
-                "color": np.array(color, dtype=np.float32),
-                "depth": np.array(depth, dtype=np.float32),
-                "accumulation": np.array(accumulation, dtype=np.float32),
-            }
 
-    def optimize_embeddings(
-        self, 
-        dataset: Dataset,
-        embeddings: Optional[Sequence[np.ndarray]] = None
-    ) -> Iterable[OptimizeEmbeddingsOutput]:
-        """
-        Optimize embeddings for each image in the dataset.
+class CamP(CamP_ZipNeRF):
+    _camp = True
 
-        Args:
-            dataset: Dataset.
-            embeddings: Optional initial embeddings.
-        """
-        raise NotImplementedError()
 
-    def get_train_embedding(self, index: int) -> Optional[np.ndarray]:
-        """
-        Get the embedding for a training image.
-
-        Args:
-            index: Index of the image.
-        """
-        return None
+class ZipNeRF(CamP_ZipNeRF):
+    _camp = False

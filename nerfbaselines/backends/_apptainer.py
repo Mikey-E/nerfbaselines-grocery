@@ -6,16 +6,18 @@ import contextlib
 from pathlib import Path
 import subprocess
 import os
-from typing import Optional, List, Tuple, TYPE_CHECKING, cast
+from typing import Optional, List, Tuple, cast
 import shlex
-import nerfbaselines
-from ..types import NB_PREFIX, TypedDict, Required
+from nerfbaselines import NB_PREFIX, MethodSpec
 from ._docker import BASE_IMAGE, get_docker_image_name, get_docker_spec
 from ._conda import conda_get_install_script, conda_get_environment_hash, CondaBackendSpec
 from ._rpc import RemoteProcessRPCBackend, get_safe_environment, customize_wrapper_separated_fs
 from ._common import get_mounts
-if TYPE_CHECKING:
-    from ..registry import MethodSpec
+try:
+    from typing import Required, TypedDict
+except ImportError:
+    from typing_extensions import Required, TypedDict
+
 
 
 class ApptainerBackendSpec(TypedDict, total=False):
@@ -29,7 +31,7 @@ class ApptainerBackendSpec(TypedDict, total=False):
 
 def apptainer_get_safe_environment():
     env = get_safe_environment()
-    allowed = {"APPTAINER_IMAGES", "APPTAINER_CACHEDIR", "CI", "NB_USE_GPU", "GITHUB_ACTIONS"}
+    allowed = {"APPTAINER_IMAGES", "APPTAINER_CACHEDIR", "CI", "NERFBASELINES_USE_GPU", "GITHUB_ACTIONS"}
     env.update({k: v for k, v in os.environ.items() if k in allowed})
     return env
 
@@ -44,7 +46,8 @@ def get_apptainer_spec(spec: 'MethodSpec') -> Optional[ApptainerBackendSpec]:
     if docker_spec is not None:
         # Try to build apptainer spec from docker spec
         apptainer_spec = cast(ApptainerBackendSpec, {
-            k: v for k, v in docker_spec.items() if k in ["environment_name", "home_path", "python_path", "default_cuda_archs"]
+            k: v for k, v in docker_spec.items() if k in 
+            ["environment_name", "home_path", "python_path", "default_cuda_archs"]
         })
         docker_image_name = get_docker_image_name(docker_spec)
         # If docker_image_name is the BASE_IMAGE, it be used, force conda build
@@ -57,11 +60,12 @@ def get_apptainer_spec(spec: 'MethodSpec') -> Optional[ApptainerBackendSpec]:
     if conda_spec is not None:
         environment_name = conda_spec.get("environment_name")
         assert environment_name is not None, "Environment name is not specified"
-        return {
+        out: ApptainerBackendSpec = {
             "image": None,
             "environment_name": environment_name,
             "conda_spec": conda_spec,
         }
+        return out
     return None
 
 
@@ -122,8 +126,8 @@ def apptainer_run(spec: ApptainerBackendSpec, args, env,
     torch_home = os.path.expanduser(env.get("TORCH_HOME", "~/.cache/torch/hub"))
     os.makedirs(torch_home, exist_ok=True)
     image = spec.get("image") or f"docker://{BASE_IMAGE}"
-    export_envs = ["TCNN_CUDA_ARCHITECTURES", "TORCH_CUDA_ARCH_LIST", "CUDAARCHS", "GITHUB_ACTIONS", "NB_AUTHKEY", "CI"]
-    package_path = str(Path(nerfbaselines.__file__).absolute().parent.parent)
+    export_envs = ["TCNN_CUDA_ARCHITECTURES", "TORCH_CUDA_ARCH_LIST", "CUDAARCHS", "GITHUB_ACTIONS", "CI"]
+    package_path = str(Path(__file__).absolute().parent.parent)
 
     return [
         "apptainer",
@@ -145,7 +149,7 @@ def apptainer_run(spec: ApptainerBackendSpec, args, env,
         "--mount",
         f'"src={shlex.quote(os.path.join(NB_PREFIX, "apptainer-conda-envs"))}","dst=/var/apptainer-conda-envs"',
         "--mount",
-        f'"src={shlex.quote(package_path)}","dst=/var/nb-package"',
+        f'"src={shlex.quote(package_path)}","dst=/var/nb-package/nerfbaselines"',
         "--mount",
         f'"src={shlex.quote(NB_PREFIX)}",dst=/var/nb-prefix',
         "--mount",
@@ -158,7 +162,7 @@ def apptainer_run(spec: ApptainerBackendSpec, args, env,
         *(sum((["--env", f"{name}={shlex.quote(shlex.quote(env.get(name, '')))}"] for name in export_envs if name in env), [])),
         ## "--env", "PYTHONPATH=/var/nb-package:${PYTHONPATH}",
         "--env",
-        "NB_USE_GPU=" + ("1" if use_gpu else "0"),
+        "NERFBASELINES_USE_GPU=" + ("1" if use_gpu else "0"),
         "--env",
         "CONDA_PKGS_DIRS=/var/nb-conda-pkgs",
         "--env",
@@ -190,15 +194,12 @@ def with_environ(env):
 class ApptainerBackend(RemoteProcessRPCBackend):
     name = "apptainer"
 
-    def __init__(self, 
-                 spec: ApptainerBackendSpec, 
-                 address: str = "0.0.0.0", 
-                 port: Optional[int] = None):
+    def __init__(self, spec: ApptainerBackendSpec):
         self._spec = spec
         self._tmpdir = None
         self._applied_mounts = None
         self._installed = False
-        super().__init__(address=address, port=port)
+        super().__init__()
 
     def __enter__(self):
         super().__enter__()
@@ -261,7 +262,7 @@ class ApptainerBackend(RemoteProcessRPCBackend):
                     image = "docker://" + BASE_IMAGE
 
                 with with_environ({**os.environ, "NERFBASELINES_CONDA_ENVIRONMENTS": "/var/apptainer-conda-envs"}) as env:
-                    args = ["bash", "-l", "-c", conda_get_install_script(conda_spec, package_path="/var/nb-package")]
+                    args = ["bash", "-l", "-c", conda_get_install_script(conda_spec, package_path="/var/nb-package/nerfbaselines")]
                 self._installed = True
                 self._spec["image"] = image
                 args, env = apptainer_run(
@@ -304,12 +305,12 @@ class ApptainerBackend(RemoteProcessRPCBackend):
             interactive=False,
             use_gpu=os.getenv("GITHUB_ACTIONS") != "true"))
 
-    def shell(self):
+    def shell(self, args=None):
         # Run apptainer image
         if not self._installed:
             raise RuntimeError("Method is not installed. Please call install() first.")
         env = apptainer_get_safe_environment()
-        args = ["bash"]
+        args = ["bash"] if args is None else list(args)
         conda_spec = self._spec.get("conda_spec")
         if conda_spec is not None:
             env_path = "/var/apptainer-conda-envs"

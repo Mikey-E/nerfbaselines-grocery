@@ -1,8 +1,8 @@
 import os
-from ..registry import MethodSpec, register
+from nerfbaselines import register, MethodSpec
 
 
-paper_results = {
+_paper_results = {
     # Blender scenes: Chair Drums Ficus Hotdog Lego Materials Mic Ship
     # Blender PSNRs: 33.00 25.01 30.13 36.18 32.54 29.62 32.91 28.65
     # Blender SSIMs: 0.967 0.925 0.964 0.974 0.961 0.949 0.980 0.856
@@ -18,7 +18,7 @@ paper_results = {
 }
 
 NeRFSpec: MethodSpec = {
-    "method": ".nerf:NeRF",
+    "method_class": ".nerf:NeRF",
     "conda": {
         "environment_name": os.path.split(__file__[:-len("_spec.py")])[-1].replace("_", "-"),
         "python_version": "3.8",
@@ -33,12 +33,12 @@ sed '239a\
 
 # Install requirements.
 conda install -y imagemagick conda-build
-pip install torch==2.3.0 torchvision==0.18.0 --index-url https://download.pytorch.org/whl/cu118
+pip install torch==2.3.0 torchvision==0.18.0 'numpy<2.0.0' --index-url https://download.pytorch.org/whl/cu118
 # nvidia-pyindex modifies paths to install older TF with newer CUDA support
 # However, we do not want to corrupt user's environment, so we set the options manually
 # pip install -I nvidia-pyindex==1.0.9
 pip install nvidia-tensorflow==1.15.5+nv22.10 --extra-index-url https://pypi.ngc.nvidia.com --no-cache-dir --trusted-host pypi.ngc.nvidia.com
-pip install configargparse==1.7 'opencv-python-headless<=4.10.0.82' imageio==2.34.1 numpy==1.23.5
+pip install configargparse==1.7 'opencv-python-headless<=4.10.0.82' imageio==2.34.1 numpy==1.23.5 importlib_metadata typing_extensions
 
 conda develop "$PWD"
 """,
@@ -48,17 +48,19 @@ conda develop "$PWD"
         "description": "Original NeRF method representing radiance field using a large MLP.",
         "paper_title": "NeRF: Representing Scenes as Neural Radiance Fields for View Synthesis",
         "paper_authors": ["Ben Mildenhall", "Pratul P. Srinivasan", "Matthew Tancik", "Jonathan T. Barron", "Ravi Ramamoorthi", "Ren Ng"],
+        "paper_results": _paper_results,
         "paper_link": "https://arxiv.org/pdf/2003.08934.pdf",
         "link": "https://www.matthewtancik.com/nerf",
         "licenses": [{"name": "MIT", "url": "https://github.com/bmild/nerf/blob/master/LICENSE"}],
     },
-    "dataset_overrides": {
-        "blender": { "config": "blender_config.txt" },
-        "llff": { "config": "llff_config.txt" },
+    "presets": {
+        "blender": { "@apply": [{"dataset": "blender"}], "config": "blender_config.txt" },
+        "llff": { "@apply": [{"dataset": "llff"}], "config": "llff_config.txt" },
+    },
+    "id": "nerf",
+    "implementation_status": {
+        "blender": "reproducing",
     }
 }
 
-register(
-    NeRFSpec,
-    name="nerf",
-)
+register(NeRFSpec)

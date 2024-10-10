@@ -1,22 +1,25 @@
 import pytest
 import numpy as np
 from nerfbaselines import cameras
-from nerfbaselines.types import get_args, camera_model_to_int, CameraModel
-from nerfbaselines.types import new_cameras
+from nerfbaselines import camera_model_to_int, CameraModel, new_cameras
+try:
+    from typing import get_args
+except ImportError:
+    from typing_extensions import get_args
 
 
 @pytest.mark.parametrize("camera_type", get_args(CameraModel))
 def test_distortions(camera_type: CameraModel):
     num_samples = 10000
-    camera_types = np.full((num_samples,), camera_model_to_int(camera_type), dtype=np.int32)
+    camera_models = np.full((num_samples,), camera_model_to_int(camera_type), dtype=np.int32)
     params = np.random.rand(num_samples, 8) * 0.01
     xy = np.random.rand(num_samples, 2) * 2 - 1
     xy *= 0.8
 
-    xy_distorted = cameras._distort(camera_types, params, xy)
+    xy_distorted = cameras._distort(camera_models, params, xy)
     if camera_type != "pinhole":
         assert not np.allclose(xy, xy_distorted, atol=5e-4, rtol=0), "distorted image should not be equal to original image"
-    new_xy = cameras._undistort(camera_types, params, xy_distorted)
+    new_xy = cameras._undistort(camera_models, params, xy_distorted)
     np.testing.assert_allclose(xy, new_xy, atol=5e-4, rtol=0)
 
 
@@ -32,7 +35,7 @@ def test_camera(camera_type):
     all_cameras = new_cameras(
         poses=poses,
         intrinsics=(np.random.randn(num_cam, 4) * 0.2 + np.array([1.0, 1.0, 0.5, 0.5])) * sizes[..., :1],
-        camera_types=np.full((num_cam,), camera_model_to_int(camera_type), dtype=np.int32),
+        camera_models=np.full((num_cam,), camera_model_to_int(camera_type), dtype=np.int32),
         distortion_parameters=np.random.rand(num_cam, 8).astype(np.float32) * 0.01,
         image_sizes=sizes,
         nears_fars=None,
@@ -45,14 +48,15 @@ def test_camera(camera_type):
     np.testing.assert_allclose(xy, xy_new, atol=5e-4, rtol=0)
 
 
-def _build_camera(camera_model: CameraModel, intrinsics, distortion_parameters):
-    image_sizes = np.array([800, 600], dtype=np.int32)
+def _build_camera(camera_model: CameraModel, intrinsics, distortion_parameters=None, image_sizes=None):
+    if image_sizes is None:
+        image_sizes = np.array([800, 600], dtype=np.int32)
     return new_cameras(
-        poses=np.eye(4)[:3, :4],
+        poses=np.eye(4, dtype=np.float32)[:3, :4],
         intrinsics=intrinsics,
         image_sizes=image_sizes,
-        camera_types=np.array(camera_model_to_int(camera_model), dtype=np.int32),
-        distortion_parameters=distortion_parameters,
+        camera_models=np.array(camera_model_to_int(camera_model), dtype=np.int32),
+        distortion_parameters=distortion_parameters if distortion_parameters is not None else np.zeros(intrinsics.shape[:-1] + (0,), dtype=np.float32),
         nears_fars=None,
     )
 
@@ -69,7 +73,7 @@ def test_camera_undistort(camera_type):
     cams = new_cameras(
         poses=poses,
         intrinsics=(np.random.randn(num_cam, 4) * 0.1 + np.array([2.0, 2.0, 0.5, 0.5])) * image_sizes[..., :1],
-        camera_types=np.full((num_cam,), camera_model_to_int(camera_type), dtype=np.int32),
+        camera_models=np.full((num_cam,), camera_model_to_int(camera_type), dtype=np.int32),
         distortion_parameters=np.random.randn(num_cam, 8) * 0.001,
         image_sizes=image_sizes,
         nears_fars=None,
@@ -91,7 +95,7 @@ def test_camera_undistort(camera_type):
 # #     cameras = new_cameras(
 # #         poses=poses,
 # #         normalized_intrinsics=np.random.rand(num_cam, 4),
-# #         camera_types=np.full((num_cam,), camera_type.value, dtype=np.int32),
+# #         camera_models=np.full((num_cam,), camera_type.value, dtype=np.int32),
 # #         distortion_parameters=np.random.randn(num_cam, 6) * 0.1,
 # #         image_sizes=np.random.randint(100, 200, (num_cam, 2), dtype=np.int32),
 # #         nears_fars=None)
@@ -107,7 +111,7 @@ def test_camera_undistort(camera_type):
 
 def _test_cam_to_cam_from_img(camera_model, intrinsics, params, uvw0):
     image_size = np.array([800, 600], dtype=np.int32)
-    cam = new_cameras(poses=np.eye(4)[:3, :4], intrinsics=intrinsics, image_sizes=image_size, camera_types=np.array(camera_model_to_int(camera_model), dtype=np.int32), distortion_parameters=params, nears_fars=None)[None]
+    cam = new_cameras(poses=np.eye(4)[:3, :4], intrinsics=intrinsics, image_sizes=image_size, camera_models=np.array(camera_model_to_int(camera_model), dtype=np.int32), distortion_parameters=params, nears_fars=None)[None]
     np.testing.assert_allclose(cam.intrinsics[0], intrinsics, atol=1e-4, rtol=0)
 
     xy = cameras.project(cam, uvw0)
@@ -119,7 +123,7 @@ def _test_cam_to_cam_from_img(camera_model, intrinsics, params, uvw0):
 
 def _test_cam_from_img_to_img(camera_model, intrinsics, params, xy0):
     image_size = np.array([800, 600], dtype=np.int32)
-    cam = new_cameras(poses=np.eye(4)[:3, :4], intrinsics=intrinsics, image_sizes=image_size, camera_types=np.array(camera_model_to_int(camera_model), dtype=np.int32), distortion_parameters=params, nears_fars=None)[None]
+    cam = new_cameras(poses=np.eye(4)[:3, :4], intrinsics=intrinsics, image_sizes=image_size, camera_models=np.array(camera_model_to_int(camera_model), dtype=np.int32), distortion_parameters=params, nears_fars=None)[None]
     np.testing.assert_allclose(cam.intrinsics[0], intrinsics, atol=1e-4, rtol=0)
 
     _, directions = cameras.unproject(cam, xy0)
@@ -198,3 +202,112 @@ def test_camera_undistort_opencv():
     ucam = cameras.undistort_camera(cam[None])[0]
     assert ucam.image_sizes is not None
     assert np.all(ucam.image_sizes > 500), "undistorted camera is wrong"
+
+
+def test_get_image_pixels_shape():
+    # For cameras of shape (), we return 
+    image_sizes = np.array([12, 15], dtype=np.int32)
+    uv = cameras.get_image_pixels(image_sizes)
+    assert uv.shape == (12 * 15, 2)
+    assert uv.dtype == np.int32
+
+    image_sizes = np.array([[12, 15]], dtype=np.int32)
+    uv = cameras.get_image_pixels(image_sizes)
+    assert uv.shape == (12 * 15, 2)
+    assert uv.dtype == np.int32
+
+    image_sizes = np.array([[12, 15], [18, 2]], dtype=np.int32)
+    uv = cameras.get_image_pixels(image_sizes)
+    assert uv.shape == (12 * 15 + 18 * 2, 2)
+    assert uv.dtype == np.int32
+
+
+def test_get_rays_shapes():
+    # For cameras of shape [] and shape of uv [N, 2], we return shape [N, 3]
+    cam = _build_camera("pinhole", np.array([536.07343019, 536.01634475, 342.37038789, 235.53685636], dtype=np.float32), image_sizes=np.array([12, 15], dtype=np.int32))
+    uv = cameras.get_image_pixels(cam.image_sizes)
+    origins, dirs = cameras.get_rays(cam, uv)
+    assert origins.shape == (12 * 15, 3)
+    assert dirs.shape == (12 * 15, 3)
+    assert origins.dtype == np.float32
+    assert dirs.dtype == np.float32
+
+    # For cameras of shape [1] and shape of uv [N, 2], we return shape [N, 3] 
+    cam = _build_camera("pinhole", np.array([536.07343019, 536.01634475, 342.37038789, 235.53685636], dtype=np.float32), image_sizes=np.array([12, 15], dtype=np.int32))[None]
+    uv = cameras.get_image_pixels(cam.image_sizes)
+    assert uv.shape == (12 * 15, 2)
+    origins, dirs = cameras.get_rays(cam, uv)
+    assert origins.shape == (12 * 15, 3)
+    assert dirs.shape == (12 * 15, 3)
+    assert origins.dtype == np.float32
+    assert dirs.dtype == np.float32
+
+    # For cameras of shape [M, 1] and shape of uv [M, N, 2], we return shape [M, N, 3] 
+    cam = _build_camera("pinhole", np.array([536.07343019, 536.01634475, 342.37038789, 235.53685636], dtype=np.float32), image_sizes=np.array([12, 15], dtype=np.int32))[None]
+    uv = cameras.get_image_pixels(cam.image_sizes)
+    assert uv.shape == (12 * 15, 2)
+    uv = np.stack([uv, uv], 0)
+    cam = cam.cat([cam, cam])[:, None]
+    origins, dirs = cameras.get_rays(cam, uv)
+    assert origins.shape == (2, 12 * 15, 3)
+    assert dirs.shape == (2, 12 * 15, 3)
+    assert origins.dtype == np.float32
+    assert dirs.dtype == np.float32
+
+
+def test_unproject_shapes():
+    # For cameras of shape [] and shape of uv [N, 2], we return shape [N, 3]
+    cam = _build_camera("pinhole", np.array([536.07343019, 536.01634475, 342.37038789, 235.53685636], dtype=np.float32), image_sizes=np.array([12, 15], dtype=np.int32))
+    uv = cameras.get_image_pixels(cam.image_sizes).astype(np.float32)
+    origins, dirs = cameras.unproject(cam, uv)
+    assert origins.shape == (12 * 15, 3)
+    assert dirs.shape == (12 * 15, 3)
+    assert origins.dtype == np.float32
+    assert dirs.dtype == np.float32
+
+    # For cameras of shape [1] and shape of uv [N, 2], we return shape [N, 3] 
+    cam = _build_camera("pinhole", np.array([536.07343019, 536.01634475, 342.37038789, 235.53685636], dtype=np.float32), image_sizes=np.array([12, 15], dtype=np.int32))[None]
+    uv = cameras.get_image_pixels(cam.image_sizes).astype(np.float32)
+    assert uv.shape == (12 * 15, 2)
+    origins, dirs = cameras.unproject(cam, uv)
+    assert origins.shape == (12 * 15, 3)
+    assert dirs.shape == (12 * 15, 3)
+    assert origins.dtype == np.float32
+    assert dirs.dtype == np.float32
+
+    # For cameras of shape [M, 1] and shape of uv [M, N, 2], we return shape [M, N, 3] 
+    cam = _build_camera("pinhole", np.array([536.07343019, 536.01634475, 342.37038789, 235.53685636], dtype=np.float32), image_sizes=np.array([12, 15], dtype=np.int32))[None]
+    uv = cameras.get_image_pixels(cam.image_sizes).astype(np.float32)
+    assert uv.shape == (12 * 15, 2)
+    uv = np.stack([uv, uv], 0)
+    cam = cam.cat([cam, cam])[:, None]
+    origins, dirs = cameras.unproject(cam, uv)
+    assert origins.shape == (2, 12 * 15, 3)
+    assert dirs.shape == (2, 12 * 15, 3)
+    assert origins.dtype == np.float32
+    assert dirs.dtype == np.float32
+
+
+def test_project_shapes():
+    # For cameras of shape [] and shape of xyz [N, 3], we return shape [N, 2]
+    cam = _build_camera("pinhole", np.array([536.07343019, 536.01634475, 342.37038789, 235.53685636], dtype=np.float32), image_sizes=np.array([12, 15], dtype=np.int32))
+    xyz = np.zeros((12 * 15, 3), dtype=np.float32)
+    uv = cameras.project(cam, xyz)
+    assert uv.shape == (12 * 15, 2)
+    assert uv.dtype == np.float32
+
+    # For cameras of shape [1] and shape of uv [N, 2], we return shape [N, 3] 
+    cam = _build_camera("pinhole", np.array([536.07343019, 536.01634475, 342.37038789, 235.53685636], dtype=np.float32), image_sizes=np.array([12, 15], dtype=np.int32))[None]
+    xyz = np.zeros((12 * 15, 3), dtype=np.float32)
+    uv = cameras.project(cam, xyz)
+    assert uv.shape == (12 * 15, 2)
+    assert uv.dtype == np.float32
+
+    # For cameras of shape [M, 1] and shape of uv [M, N, 2], we return shape [M, N, 3] 
+    cam = _build_camera("pinhole", np.array([536.07343019, 536.01634475, 342.37038789, 235.53685636], dtype=np.float32), image_sizes=np.array([12, 15], dtype=np.int32))[None]
+    uv = cameras.get_image_pixels(cam.image_sizes).astype(np.float32)
+    xyz = np.zeros((2, 12 * 15, 3), dtype=np.float32)
+    cam = cam.cat([cam, cam])[:, None]
+    uv = cameras.project(cam, xyz)
+    assert uv.shape == (2, 12 * 15, 2)
+    assert uv.dtype == np.float32

@@ -20,7 +20,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "opencv-python>=4.6.0.66",
+    "opencv-python>=4.6.0",
     "typing-extensions>=4.4.0",
     "wandb>=0.13.3",
     "click>=8.0.0",
@@ -36,43 +36,49 @@ dependencies = [
     "scipy",
     'importlib-metadata>=6.0.0; python_version < "3.10"',
     # Viwer dependencies
-    'viser<0.2.0',
+    'viser<0.2.0; python_version > "3.7"',
 ]
 dynamic = ["version"]
 
 [project.urls]
-Documentation = "https://jkulhanek.com/nerfbaselines"
-Source = "https://github.com/jkulhanek/nerfbaselines"
-Homepage = "https://jkulhanek.com/nerfbaselines"
-"Bug Tracker" = "https://github.com/jkulhanek/nerfbaselines/issues"
+Documentation = "https://nerfbaselines.github.io/docs"
+Source = "https://github.com/nerfbaselines/nerfbaselines"
+Homepage = "https://nerfbaselines.github.io/"
+"Bug Tracker" = "https://github.com/nerfbaselines/nerfbaselines/issues"
 
 [project.optional-dependencies]
-viewer = [
-    'viser<0.2.0',
-]
 web = [
-    'jinja2==3.1.4',
-    'livereload==2.7.0'
+    'jinja2>=3.1.4',
+    'livereload>=2.7.0',
+    'sphinx-click>=6.0.0',
+    'sphinx>=4.2.0',
+    'sphinx-rtd-theme>=2.0.0',
+    'sphinxcontrib-apidoc>=0.5.0',
+    'sphinxext-opengraph>=0.9.1',
+    'sphinx-copybutton>=0.5.2',
+    'furo>=2022.1.0',
+    'myst_parser>=4.0.0',
+    'myst_nb>=1.1.1',
+    'sphinx-design>=0.6.1',
 ]
 dev = [
-    'torch',
-    'torchmetrics',
-    'jax',
-    'pytest==7.4.4',
-    'typeguard==4.2.1',
-    'dm-pix',
-    # Viewer
-    'viser<0.2.0',
+    'pytest',
+    'typeguard<=4.2.1',
+    'pytest-benchmark',
+    'pyright<=1.1.377',
     # Web
     'jinja2==3.1.4',
-    'livereload==2.7.0'
+    'livereload==2.7.0',
+    # Release
+    'twine',
+    'build',
 ]
 
 [project.scripts]
 nerfbaselines = "nerfbaselines.__main__:main"
 
 [tool.pytest.ini_options]
-addopts = '--typeguard-packages nerfbaselines'
+addopts = '--typeguard-packages nerfbaselines --benchmark-name=short --benchmark-columns mean,median'
 
 [tool.setuptools]
 include-package-data = true
@@ -84,33 +90,15 @@ include = ["nerfbaselines*"]
 line-length = 200
 
 [tool.pyright]
-ignore = [
-  "nerfbaselines/methods/_impl/**/*",
-]
 exclude = ["**/node_modules",
     "**/__pycache__",
     "**/build",
-    "nerfbaselines/viewer/nerfstudio.py",
-    "nerfbaselines/methods/camp_zipnerf.py",
-    "nerfbaselines/methods/gaussian_splatting.py",
-    "nerfbaselines/methods/instant_ngp.py",
-    "nerfbaselines/methods/mip_splatting.py",
-    "nerfbaselines/methods/multinerf.py",
-    "nerfbaselines/methods/nerf.py",
-    "nerfbaselines/methods/nerfstudio.py",
-    "nerfbaselines/methods/tensorf.py",
-    "nerfbaselines/methods/gaussian_opacity_fields.py",
-    "nerfbaselines/methods/nerfw_reimpl.py",
-    "nerfbaselines/methods/kplanes.py",
+    "docs/**/*",
     "nerfbaselines/methods/nerfonthego.py",
-    "nerfbaselines/methods/seathru_nerf.py",
-    "nerfbaselines/methods/tetranerf.py",
-    "nerfbaselines/methods/kplanes.py",
     "nerfbaselines/methods/trips/**/*",
     "scripts/**/*",
 ]
 defineConstant = { DEBUG = true }
-
 reportMissingImports = "warning"
 reportMissingTypeStubs = false
 reportPrivateImportUsage = false
