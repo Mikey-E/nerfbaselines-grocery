@@ -1,13 +1,12 @@
-from ..registry import register
+from nerfbaselines import register
 
 
-register(name="phototourism", spec={
-    "load_dataset_function": ".phototourism:load_phototourism_dataset",
-    "priority": 170,
+register({
+    "id": "phototourism",
     "download_dataset_function": ".phototourism:download_phototourism_dataset",
     "evaluation_protocol": {
-        "evaluation_protocol": ".phototourism:NerfWEvaluationProtocol",
-        "name": "nerfw",
+        "evaluation_protocol_class": ".phototourism:NerfWEvaluationProtocol",
+        "id": "nerfw",
     },
     "metadata": {
         "id": "phototourism",

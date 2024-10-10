@@ -1,3 +1,5 @@
+# TODO: remove points3D requirement
+import dataclasses
 import tempfile
 import sys
 from collections import defaultdict
@@ -12,33 +14,61 @@ from contextlib import contextmanager
 import warnings
 import glob
 import logging
+import numpy as np
 from argparse import ArgumentParser
 from functools import partial
-from typing import Optional, Iterable, Sequence
-from nerfbaselines.utils import remap_error, flatten_hparams, convert_image_dtype
-from nerfbaselines.types import Method, Dataset, Cameras, RenderOutput, OptimizeEmbeddingsOutput, ModelInfo, MethodInfo, CameraModel, get_args
-from nerfbaselines.pose_utils import invert_transform, pad_poses
+from typing import Optional, Any
+from nerfbaselines import (
+    Method, Dataset, Cameras, RenderOutput,
+    OptimizeEmbeddingOutput, 
+    ModelInfo, MethodInfo, CameraModel,
+)
+from nerfbaselines.utils import invert_transform, pad_poses, convert_image_dtype
 from nerfbaselines import cameras as _cameras
-
-import pytorch_lightning as pl
-from pytorch_lightning import Trainer
-import numpy as np
-import torch
-
-
-from pytorch_lightning import loggers as _loggers
 try:
-    from pytorch_lightning.loggers import TestTubeLogger as _
+    from typing import get_args
+except ImportError:
+    from typing_extensions import get_args
+
+import pytorch_lightning as pl  # type: ignore
+from pytorch_lightning import Trainer  # type: ignore
+import torch  # type: ignore
+
+
+from pytorch_lightning import loggers as _loggers  # type: ignore
+try:
+    from pytorch_lightning.loggers import TestTubeLogger as _  # type: ignore
     del _
 except ImportError:
-    _loggers.TestTubeLogger = _loggers.TensorBoardLogger
-from datasets import phototourism as pl_phototourism_dataset
-from models.rendering import render_rays
-import train
+    _loggers.TestTubeLogger = _loggers.TensorBoardLogger  # type: ignore
+
+from datasets.phototourism import PhototourismDataset as _PhototourismDataset  # type: ignore
+from models.rendering import render_rays  # type: ignore
+import train  # type: ignore
 
 
 logger = logging.getLogger("nerfw-reimpl")
 warnings.filterwarnings("ignore", ".*does not have many workers.*")
+
+
+# We copy the Trainer class to remove the global_step property
+class ETrainer(Trainer):
+    global_step = 0
+    current_epoch = 0
+
+
+def flatten_hparams(hparams, *, separator: str = "/", _prefix: str = ""):
+    flat = {}
+    if dataclasses.is_dataclass(hparams):
+        hparams = {f.name: getattr(hparams, f.name) for f in dataclasses.fields(hparams)}
+    for k, v in hparams.items():
+        if _prefix:
+            k = f"{_prefix}{separator}{k}"
+        if isinstance(v, dict) or dataclasses.is_dataclass(v):
+            flat.update(flatten_hparams(v, _prefix=k, separator=separator).items())
+        else:
+            flat[k] = v
+    return flat
 
 
 class CallbackIterator:
@@ -72,11 +102,13 @@ class CallbackIterator:
         if self._thread is None:
             raise RuntimeError("Iterator is not running. Call iter() first")
         sentinel = self._pause_sentinel
+        out = None
         while sentinel == self._pause_sentinel:
             sentinel, out = self._queue.get()
         if sentinel is self._end_sentinel:
             raise StopIteration()
         elif sentinel is self._exception_sentinel:
+            assert isinstance(out, BaseException), "Invalid exception type"
             raise out
         elif sentinel is self._result_sentinel:
             return out
@@ -85,12 +117,21 @@ class CallbackIterator:
 
 
 
+_patched = False
+
 def patch_nerfw_rempl():
+    global _patched
+    if _patched:
+        return
+    _patched = True
     # Fix bug in the nerf_pl codebase
     # From the README:
     #   There is a difference between the paper: I didn't add the appearance embedding in the coarse model while it should. 
     #   Please change this line to self.encode_appearance = encode_appearance to align with the paper.
-    from models.nerf import NeRF
+    from models.nerf import NeRF  # type: ignore
+    if getattr(type(NeRF), "__name__", None) == "MagicMock":
+        # Skip in tests
+        return
     old_init = NeRF.__init__
     def new_init(self, *args, **kwargs):
         old_init(self, *args, **kwargs)
@@ -98,10 +139,10 @@ def patch_nerfw_rempl():
     NeRF.__init__ = new_init
 
     # All memory is in cache, using more workers is just a waste
-    from train import NeRFSystem
+    from train import NeRFSystem  # type: ignore
     old_train_dataloader = NeRFSystem.train_dataloader
     def _train_dataloader(self):
-        from train import DataLoader
+        from train import DataLoader  # type: ignore
         old_Dataloader = DataLoader.__init__
         try:
             def _init(*args, **kwargs):
@@ -117,17 +158,30 @@ def patch_nerfw_rempl():
         return dl
     NeRFSystem.train_dataloader = _train_dataloader
 
+    try:
+        # Patch for newer PL
+        del train.NeRFSystem.validation_epoch_end
+    except AttributeError:
+        pass
+
+    # Patch nerf_pl for newer PL
+    @train.NeRFSystem.hparams.setter
+    def hparams(self, hparams):
+        self.save_hyperparameters(hparams)
+
+    train.NeRFSystem.hparams = hparams
+
 
 patch_nerfw_rempl()
 
 
 class CameraTransformer:
-    def __init__(self, scale_factor=None, points3D_xyz=None):
+    def __init__(self, scale_factor, points3D_xyz=None):
         if points3D_xyz is not None:
             points3D_xyz = torch.from_numpy(points3D_xyz).float()
         self.scale_factor = scale_factor
         self.points3D_xyz = points3D_xyz
-        self._nears_fars_cache = None
+        self._nears_fars_cache: Any = None
 
     @staticmethod
     @torch.no_grad()
@@ -148,7 +202,9 @@ class CameraTransformer:
 
     def save(self, checkpoint_data):
         checkpoint_data["scale_factor"] = self.scale_factor
-        checkpoint_data["points3D_xyz"] = self.points3D_xyz.cpu().numpy()
+        checkpoint_data["points3D_xyz"] = None
+        if self.points3D_xyz is not None:
+            checkpoint_data["points3D_xyz"] = self.points3D_xyz.cpu().numpy()
 
     @staticmethod
     def build_from_dataset(dataset):
@@ -204,7 +260,7 @@ class CameraTransformer:
         return all_rays
 
 
-class PhototourismDataset(pl_phototourism_dataset.PhototourismDataset):
+class PhototourismDataset(_PhototourismDataset):
     def __init__(self, dataset: Dataset, camera_transformer: CameraTransformer, *, split, **kwargs):
         if split != "train":
             return None
@@ -248,14 +304,14 @@ class PhototourismDataset(pl_phototourism_dataset.PhototourismDataset):
         self.N_images_train = len(cameras)
 
         self.all_rgbs = torch.zeros((num_rays, 3), dtype=torch.uint8)
-        self.all_rgbs = torch.cat([torch.from_numpy(x).view(-1, 3) for x in self.dataset_images], 0)
+        if self.dataset_images is not None:
+            self.all_rgbs = torch.cat([torch.from_numpy(x).view(-1, 3) for x in self.dataset_images], 0)
         assert len(self.all_rgbs) == num_rays, f"RGBs and rays size mismatch {len(self.all_rgbs)} != {num_rays}"
         assert self.all_rgbs.dtype == torch.uint8, f"RGBs should be uint8, got {self.all_rgbs.dtype}"
 
         # Save some memory
         del self.dataset_images
-        del self.dataset["images"]
-
+        self.dataset.pop("images", None)  # type: ignore
 
         logger.info(f"Loaded {self.N_images_train} images for training")
         logger.info(f"Cached {num_rays} rays")
@@ -277,6 +333,7 @@ def _override_train_iteration(model, old, cb, *args, **kwargs):
     cb(None)
     metrics = {}
     def log(name, value, *args, **kwargs):
+        del args, kwargs
         metrics[name] = value
     model.log, old_log = log, model.log
     try:
@@ -302,7 +359,7 @@ def _system_setup(old_setup, train_dataset, camera_transformer, *args, **kwargs)
 def get_opts(config_overrides):
     parse_args = ArgumentParser.parse_args
     try:
-        ArgumentParser.parse_args = lambda self: self
+        ArgumentParser.parse_args = lambda self: self  # type: ignore
         parser = train.get_opts()
     except Exception as e:
         print(f"Failed to load options: {e}")
@@ -343,19 +400,12 @@ def get_opts(config_overrides):
 
 
 class NeRFWReimpl(Method):
-    _method_name: str = "nerfw-reimpl"
-
-    @remap_error
     def __init__(self, *,
                  checkpoint: Optional[str] = None,
                  train_dataset: Optional[Dataset] = None,
                  config_overrides: Optional[dict] = None):
         self._train_iterator = None
-        self.trainer = None
-        self.hparams = None
         self.checkpoint = checkpoint
-        self.gaussians = None
-        self.background = None
 
         self._loaded_step = None
         self._num_pixels = None
@@ -369,6 +419,7 @@ class NeRFWReimpl(Method):
         # Setup parameters and camera transformer
         ckpt_file = None
         self._num_pixels = None
+        ckpt_data = None
         if self.checkpoint is not None:
             # Get checkpoint path
             ckpts = glob.glob(os.path.join(self.checkpoint, "*.ckpt"))
@@ -378,7 +429,7 @@ class NeRFWReimpl(Method):
             hparams = get_opts(config_overrides)
             for k, v in ckpt_data["hyper_parameters"].items():
                 setattr(hparams, k, v)
-            self._loaded_step = ckpt_data["global_step"]
+            self._loaded_step = int(ckpt_data["global_step"])
             self._num_pixels = ckpt_data.get("num_pixels", 10)
             camera_transformer_data = ckpt_data.get("camera_transformer", None)
             if camera_transformer_data is not None:
@@ -398,17 +449,12 @@ class NeRFWReimpl(Method):
         self.hparams = hparams
 
         # Load PL module
-        try:
-            # Patch for newer PL
-            del train.NeRFSystem.validation_epoch_end
-        except AttributeError:
-            pass
         system = train.NeRFSystem(self.hparams)
         system.setup = partial(_system_setup, system.setup, train_dataset, self.camera_transformer)
         system.val_dataloader = pl.LightningModule.val_dataloader
         system.validation_step = pl.LightningModule.validation_step
         self.system = system
-        if self.checkpoint is not None:
+        if ckpt_data is not None:
             system.load_state_dict(ckpt_data["state_dict"])
 
         # Patch PL trying to detect slurm
@@ -416,16 +462,18 @@ class NeRFWReimpl(Method):
         os.environ.pop("SLURM_JOB_NAME", None)
 
         # Setup trainer
-        trainer = Trainer(max_epochs=self.hparams.num_epochs,
-                          devices=self.hparams.num_gpus if train_dataset is not None else 1,
-                          accelerator="cuda",
-                          strategy="ddp",
-                          barebones=True,
-                          num_sanity_val_steps=0,
-                          limit_train_batches=self.hparams.steps_per_epoch,
-                          enable_progress_bar=False,
-                          benchmark=True,
-                          profiler=None)
+        trainer = (Trainer if train_dataset is not None else ETrainer)(
+            max_epochs=self.hparams.num_epochs,
+            devices=self.hparams.num_gpus if train_dataset is not None else 1,
+            accelerator="cuda",
+            strategy="ddp",
+            barebones=True,
+            num_sanity_val_steps=0,
+            limit_train_batches=self.hparams.steps_per_epoch,
+            enable_progress_bar=False,
+            benchmark=True,
+            profiler=None)
+
         # Setup training
         if train_dataset is not None:
             with tempfile.NamedTemporaryFile() as tmpfile:
@@ -437,7 +485,7 @@ class NeRFWReimpl(Method):
                 tmpfile.flush()
                 tmpfile.seek(0)
                 sys.argv = [os.path.abspath(__file__), tmpfile.name]
-                os.environ["_NB_DISABLE_LOGGING"] = "1"
+                os.environ["_NERFBASELINES_DISABLE_LOGGING"] = "1"
                 def _run_training(yield_cb):
                     system.training_step = partial(_override_train_iteration, system, system.training_step, yield_cb)
                     # Patch yield_cb to pause the training after each step
@@ -458,14 +506,13 @@ class NeRFWReimpl(Method):
                 next(self._train_iterator)
                 logger.info(f"Model initialized for training")
         else:
+            assert ckpt_data is not None, "Either train_dataset or checkpoint must be provided"
             trainer.strategy._lightning_module = trainer.strategy.model = self.system.to("cuda")
             trainer.model.setup("eval")
             trainer._checkpoint_connector._restore_modules_and_callbacks(ckpt_file)
             # We need to fix the trainer.global_step and trainer.current_epoch
-            del Trainer.global_step
             trainer.global_step = ckpt_data["global_step"]
             if "current_epoch" in ckpt_data:
-                del Trainer.current_epoch
                 trainer.current_epoch = ckpt_data["current_epoch"]
             logger.info(f"Model initialized for evaluation")
         self.trainer = trainer
@@ -480,9 +527,8 @@ class NeRFWReimpl(Method):
 
     @classmethod
     def get_method_info(cls):
-        assert cls._method_name is not None, "Method was not properly registered"
         return MethodInfo(
-            name=cls._method_name,
+            method_id="",  # Will be provided by the registry
             required_features=frozenset(("color", "points3D_xyz")),
             supported_camera_models=frozenset(get_args(CameraModel)),
             supported_outputs=("color", "depth"),
@@ -490,6 +536,7 @@ class NeRFWReimpl(Method):
 
     def get_info(self) -> ModelInfo:
         num_iterations = self.hparams.num_epochs * min(15000, ((self._num_pixels + self.hparams.batch_size - 1) // self.hparams.batch_size))
+        num_iterations = int(num_iterations)
         hparamsflat = flatten_hparams(vars(self.hparams), separator=".")
         hparamsflat.pop("root_dir", None)
         hparamsflat.pop("prefixes_to_ignore", None)
@@ -560,9 +607,8 @@ class NeRFWReimpl(Method):
                         if output_device is not None:
                             v = v.to(output_device)
                         results[k] += [v]
-                for k, v in results.items():
-                    results[k] = torch.cat(v, 0)
-                return results
+                return {
+                    k: torch.cat(v, 0) for k, v in results.items()}
             try:
                 for p in model.parameters():
                     p.requires_grad = False
@@ -575,29 +621,29 @@ class NeRFWReimpl(Method):
                     p.requires_grad = r
 
     @torch.no_grad()
-    def render(self, cameras: Cameras, *, embeddings=None, options=None) -> Iterable[RenderOutput]:
-        del options
+    def render(self, camera: Cameras, *, options=None) -> RenderOutput:
+        camera = camera.item()  # Ensure it is a single camera
         model = self._model
         device = next(iter(model.parameters())).device
         assert device.type == "cuda", "Model is not on GPU"
-        for i in range(len(cameras)):
-            rays = self.camera_transformer.get_rays(cameras[i:i+1]).to(device) # (H*W, 8)
-            ts = torch.zeros((len(rays),), dtype=torch.long, device=device)
 
-            embedding = embeddings[i] if embeddings is not None else None
-            na = self.hparams.N_a
-            embedding_a, embedding_t = (embedding[..., :na], embedding[..., na:]) if embedding is not None else (None, None)
-            with self._with_eval_embedding(embedding_a, embedding_t) as model:
-                results = model(rays, ts, output_device=torch.device("cpu"))
+        rays = self.camera_transformer.get_rays(camera[None]).to(device) # (H*W, 8)
+        ts = torch.zeros((len(rays),), dtype=torch.long, device=device)
 
-            typ = 'fine' if 'rgb_fine' in results else 'coarse'
-            W, H = cameras.image_sizes[i]
-            img = results[f'rgb_{typ}'].view(H, W, 3) # (3, H, W)
-            depth = results[f'depth_{typ}'].view(H, W) # (3, H, W)
-            yield {
-                "color": img.detach().cpu().numpy(),
-                "depth": depth.detach().cpu().numpy(),
-            }
+        embedding = (options or {}).get("embedding", None)
+        na = self.hparams.N_a
+        embedding_a, embedding_t = (embedding[..., :na], embedding[..., na:]) if embedding is not None else (None, None)
+        with self._with_eval_embedding(embedding_a, embedding_t) as model:
+            results = model(rays, ts, output_device=torch.device("cpu"))
+
+        typ = 'fine' if 'rgb_fine' in results else 'coarse'
+        W, H = camera.image_sizes
+        img = results[f'rgb_{typ}'].view(H, W, 3) # (3, H, W)
+        depth = results[f'depth_{typ}'].view(H, W) # (3, H, W)
+        return {
+            "color": img.detach().cpu().numpy(),
+            "depth": depth.detach().cpu().numpy(),
+        }
 
     @property
     def _is_rank0(self):
@@ -611,6 +657,7 @@ class NeRFWReimpl(Method):
         logger.info(f"Model initialized for evaluation")
 
     def train_iteration(self, step):
+        assert self._train_iterator is not None, "Method not initialized for training"
         del step
         out = None
         while out is None:
@@ -651,84 +698,67 @@ class NeRFWReimpl(Method):
         if self.hparams.encode_a:
             return self._model.embedding_a.weight.data.mean(0).cpu().numpy()
 
-    def optimize_embeddings(
-        self, 
-        dataset: Dataset,
-        embeddings: Optional[Sequence[np.ndarray]] = None
-    ) -> Iterable[OptimizeEmbeddingsOutput]:
-        """
-        Optimize embeddings for each image in the dataset.
-
-        Args:
-            dataset: Dataset.
-            embeddings: Optional initial embeddings.
-        """
+    def optimize_embedding(self, dataset: Dataset, *, embedding: Optional[np.ndarray] = None) -> OptimizeEmbeddingOutput:
         torch.cuda.empty_cache()
-        cameras = dataset["cameras"]
+        camera = dataset["cameras"].item()  # Ensure it is a single camera
         model = self._model
         device = next(iter(model.parameters())).device
         assert device.type == "cuda", "Model is not on GPU"
-        for i in range(len(dataset["cameras"])):
-            embedding = embeddings[i] if embeddings is not None else None
-            # TODO: nondefault embedding
-            if embedding is not None:
-                embedding_th = torch.from_numpy(embedding).to(device=device)
-                embedding_a = embedding_th[..., :self.hparams.N_a]
-                embedding_t = embedding_th[..., self.hparams.N_a:]
-            else:
-                embedding_a = self._model.embedding_a.weight.mean(0)
-                embedding_t = self._model.embedding_t.weight.mean(0)
 
-            param_a = torch.nn.Parameter(embedding_a.clone().detach().to(device=device).requires_grad_(True), requires_grad=True)
-            param_t = torch.nn.Parameter(embedding_t.clone().detach().to(device=device).requires_grad_(True), requires_grad=True)
-            params = [param_a, param_t] if self.hparams.appearance_optim_finetune_tau else [param_a]
-            optim = torch.optim.Adam(params, lr=self.hparams.appearance_optim_lr)
-            num_steps = self.hparams.appearance_optim_steps
-            lr_sched = torch.optim.lr_scheduler.StepLR(optim, step_size=num_steps//3, gamma=0.1)
-            mses = []
-            psnrs = []
-            all_rays = self.camera_transformer.get_rays(cameras[i:i+1]) # (H*W, 8)
-            w, h = cameras.image_sizes[i]
-            img_data = dataset["images"][i]
-            all_rgbs = torch.from_numpy(convert_image_dtype(img_data[:h, :w], np.float32).reshape(-1, img_data.shape[-1])) # (H*W, 3)
-            assert all_rays.size(0) == all_rgbs.size(0), f"Rays and images size mismatch {all_rays.size(0)} != {all_rgbs.size(0)}"
-            with self._with_eval_embedding(param_a, param_t) as model, \
-                 tqdm.tqdm(total=num_steps, desc=f"Optimizing image embedding [{i}/{len(cameras)}]") as pbar:
-                for _ in range(num_steps):
-                    optim.zero_grad()
-                    local_indices = torch.randperm(len(all_rays))[:self.hparams.batch_size]
-                    rays = all_rays[local_indices].to(device)
-                    rgbs = all_rgbs[local_indices].to(device)
-                    ts = torch.zeros((len(rays),), dtype=torch.long, device=device)
+        # TODO: nondefault embedding
+        if embedding is not None:
+            embedding_th = torch.from_numpy(embedding).to(device=device)
+            embedding_a = embedding_th[..., :self.hparams.N_a]
+            embedding_t = embedding_th[..., self.hparams.N_a:]
+        else:
+            embedding_a = self._model.embedding_a.weight.mean(0)
+            embedding_t = self._model.embedding_t.weight.mean(0)
 
-                    results = model(rays, ts)
-                    typ = 'fine' if 'rgb_fine' in results else 'coarse'
-                    img = results[f'rgb_{typ}']
-                    mse = torch.nn.functional.mse_loss(img, rgbs).mean()
-                    mse.backward()
-                    assert torch.isfinite(param_a.grad).all()
-                    assert torch.isfinite(param_t.grad).all()
-                    optim.step()
-                    lr_sched.step()
-                    mses.append(mse.item())
-                    psnrs.append(10 * math.log10(1 / mse.item()))
-                    pbar.set_postfix({"mse": f"{mse.item():.4f}", "psnr": f"{psnrs[-1]:.3f}"})
-                    pbar.update()
+        param_a = torch.nn.Parameter(embedding_a.clone().detach().to(device=device).requires_grad_(True), requires_grad=True)
+        param_t = torch.nn.Parameter(embedding_t.clone().detach().to(device=device).requires_grad_(True), requires_grad=True)
+        params = [param_a, param_t] if self.hparams.appearance_optim_finetune_tau else [param_a]
+        optim = torch.optim.Adam(params, lr=self.hparams.appearance_optim_lr)
+        num_steps = self.hparams.appearance_optim_steps
+        lr_sched = torch.optim.lr_scheduler.StepLR(optim, step_size=num_steps//3, gamma=0.1)
+        mses = []
+        psnrs = []
+        all_rays = self.camera_transformer.get_rays(camera[None]) # (H*W, 8)
+        w, h = camera.image_sizes
+        img_data = dataset["images"][0]
+        all_rgbs = torch.from_numpy(convert_image_dtype(img_data[:h, :w], np.float32).reshape(-1, img_data.shape[-1])) # (H*W, 3)
+        assert all_rays.size(0) == all_rgbs.size(0), f"Rays and images size mismatch {all_rays.size(0)} != {all_rgbs.size(0)}"
+        with self._with_eval_embedding(param_a, param_t) as model, \
+             tqdm.tqdm(total=num_steps, desc=f"Optimizing image embedding") as pbar:
+            for _ in range(num_steps):
+                optim.zero_grad()
+                local_indices = torch.randperm(len(all_rays))[:self.hparams.batch_size]
+                rays = all_rays[local_indices].to(device)
+                rgbs = all_rgbs[local_indices].to(device)
+                ts = torch.zeros((len(rays),), dtype=torch.long, device=device)
 
-            render_output = None
-            appearance_embedding = np.concatenate((param_a.detach().cpu().numpy(), param_t.detach().cpu().numpy()), -1)
-            for render_output in self.render(cameras[i:i+1], [appearance_embedding] if appearance_embedding is not None else None):
-                pass
-            assert render_output is not None
-            yield {
-                "embedding": appearance_embedding,
-                "render_output": render_output,
-                "metrics": {
-                    "psnr": psnrs,
-                    "mse": mses,
-                    "loss": mses,
-                }
+                results = model(rays, ts)
+                typ = 'fine' if 'rgb_fine' in results else 'coarse'
+                img = results[f'rgb_{typ}']
+                mse = torch.nn.functional.mse_loss(img, rgbs).mean()
+                mse.backward()
+                assert param_a.grad is not None and torch.isfinite(param_a.grad).all()
+                assert param_t.grad is not None and torch.isfinite(param_t.grad).all()
+                optim.step()
+                lr_sched.step()
+                mses.append(mse.item())
+                psnrs.append(10 * math.log10(1 / mse.item()))
+                pbar.set_postfix({"mse": f"{mse.item():.4f}", "psnr": f"{psnrs[-1]:.3f}"})
+                pbar.update()
+
+        appearance_embedding = np.concatenate((param_a.detach().cpu().numpy(), param_t.detach().cpu().numpy()), -1)
+        return {
+            "embedding": appearance_embedding,
+            "metrics": {
+                "psnr": psnrs,
+                "mse": mses,
+                "loss": mses,
             }
+        }
 
     def get_train_embedding(self, index: int) -> Optional[np.ndarray]:
         """
@@ -748,15 +778,13 @@ class NeRFWReimpl(Method):
 
 if __name__ == "__main__":
     # Run DDP loop
-    from nerfbaselines.utils import setup_logging
-    setup_logging(False)  # setup_logging("disabled")
     logger = logging.getLogger("slave")
     logger.setLevel(logging.INFO)
     logger.info("Launching slave process")
     with open(sys.argv[1], "rb") as f:
         kwargs = pickle.load(f)
 
-    method = NeRFWReimpl(**kwargs)
+    method = NeRFWReimpl(**kwargs)  # type: ignore
     del kwargs
     info = method.get_info()
     for i in range(info.get("loaded_step") or 0, info["num_iterations"]):

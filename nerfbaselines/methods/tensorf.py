@@ -1,6 +1,7 @@
+import io
+import base64
 import warnings
 import math
-import dataclasses
 import numpy as np
 import json
 import logging
@@ -8,28 +9,40 @@ import os
 import shlex
 import torch
 from pathlib import Path
-from typing import Any, Dict, Iterable, Sequence
+from typing import Any, Dict, Optional
 
 try:
-    from typing import Optional
+    from typing import get_args
 except ImportError:
-    from typing_extensions import Optional
+    from typing_extensions import get_args
 
-from nerfbaselines.types import Dataset, OptimizeEmbeddingsOutput, RenderOutput, MethodInfo, ModelInfo
-from nerfbaselines.io import numpy_from_base64, numpy_to_base64
-from nerfbaselines.types import Cameras, CameraModel, get_args
-from nerfbaselines import Method
+from nerfbaselines import (
+    Dataset,
+    RenderOutput, MethodInfo, ModelInfo,
+    Cameras, CameraModel, Method
+)
 from nerfbaselines import cameras as _cameras
 
-import configargparse
-import opt
-from opt import config_parser
-from renderer import OctreeRender_trilinear_fast
-from utils import N_to_reso, cal_n_samples, TVLoss
-from train import SimpleSampler
-from models import tensoRF as models
-from dataLoader.ray_utils import ndc_rays_blender
-from dataLoader.llff import average_poses
+import configargparse  # type: ignore
+import opt  # type: ignore
+from opt import config_parser  # type: ignore
+from renderer import OctreeRender_trilinear_fast  # type: ignore
+from utils import N_to_reso, cal_n_samples, TVLoss  # type: ignore
+from train import SimpleSampler  # type: ignore
+from models import tensoRF as models  # type: ignore
+from dataLoader.ray_utils import ndc_rays_blender  # type: ignore
+from dataLoader.llff import average_poses  # type: ignore
+
+
+def numpy_to_base64(array: np.ndarray) -> str:
+    with io.BytesIO() as f:
+        np.save(f, array)
+        return base64.b64encode(f.getvalue()).decode("ascii")
+
+
+def numpy_from_base64(data: str) -> np.ndarray:
+    with io.BytesIO(base64.b64decode(data)) as f:
+        return np.load(f)
 
 
 def get_rays_and_indices(camera: Cameras):
@@ -89,7 +102,7 @@ def apply_transform(transform, poses):
 
 
 class TensoRFDataset:
-    def __init__(self, dataset: Dataset, transform=None, is_stack=False, dataset_name=None):
+    def __init__(self, dataset, transform=None, is_stack=False, dataset_name=None):
         self.is_stack = is_stack
         self.scene_bbox = torch.tensor([[-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]], dtype=torch.float32)
         self.white_bg = True
@@ -99,9 +112,9 @@ class TensoRFDataset:
 
         poses = dataset["cameras"].poses.copy()
 
-        if dataset["metadata"].get("name") == "blender" and dataset_name != "blender":
+        if dataset["metadata"].get("id") == "blender" and dataset_name != "blender":
             warnings.warn("Dataset is 'blender', but not using blender dataset settings.")
-        if dataset["metadata"].get("name") == "llff" and dataset_name != "llff":
+        if dataset["metadata"].get("id") == "llff" and dataset_name != "llff":
             warnings.warn("Dataset is 'llff', but not using llff dataset settings.")
 
         if dataset_name == "blender":
@@ -116,13 +129,10 @@ class TensoRFDataset:
                 transform = get_llff_transform(poses, dataset["cameras"].nears_fars)
             poses = apply_transform(transform, poses)
 
-            dataset = dataclasses.replace(
-                dataset,
-                cameras=dataclasses.replace(
-                    dataset["cameras"],
-                    poses=poses,
-                    nears_fars=np.array([[0.0, 1.0]] * len(poses), dtype=np.float32),
-                ),
+            dataset = dataset.copy()
+            dataset["cameras"] = dataset["cameras"].replace(
+                poses=poses,
+                nears_fars=np.array([[0.0, 1.0]] * len(poses), dtype=np.float32),
             )
 
             self.near_far = [0.0, 1.0]
@@ -134,7 +144,7 @@ class TensoRFDataset:
             self.scene_bbox = torch.tensor(scene_bbox).float()
             self.near_far = [0.1, far]
 
-        self.center = torch.mean(self.scene_bbox, axis=0).float().view(1, 1, 3)
+        self.center = torch.mean(self.scene_bbox, dim=0).float().view(1, 1, 3)
         self.radius = (self.scene_bbox[1] - self.center).float().view(1, 1, 3)
         self._setup(dataset)
 
@@ -190,8 +200,6 @@ class TensoRFDataset:
 
 
 class TensoRF(Method):
-    _method_name: str = "tensorf"
-
     def __init__(self, *,
                  checkpoint: Optional[str] = None, 
                  train_dataset: Optional[Dataset] = None,
@@ -199,8 +207,8 @@ class TensoRF(Method):
         self.checkpoint = checkpoint
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.renderer = OctreeRender_trilinear_fast
+        self.reso_mask = None
 
-        self.args = None
         self.metadata = {}
         self._arg_list = ()
         self.step = 0
@@ -214,7 +222,6 @@ class TensoRF(Method):
                 self.step = self.metadata.get("step", 0)
             self._arg_list = shlex.split(self.metadata["args"])
         self.nSamples = None
-        self.tensorf = None
 
         self._load_config()
         if train_dataset is not None and checkpoint is not None:
@@ -229,10 +236,9 @@ class TensoRF(Method):
         self.args = config_parser(shlex.join(self._arg_list))
 
     @classmethod
-    def get_method_info(cls) -> MethodInfo:
-        assert cls._method_name is not None, "Method was not properly registered"
+    def get_method_info(cls):
         return MethodInfo(
-            name=cls._method_name,
+            method_id="",  # Will be set by the registry
             required_features=frozenset(("color",)),
             supported_camera_models=frozenset(get_args(CameraModel)),
             supported_outputs=("color", "depth"),
@@ -271,6 +277,7 @@ class TensoRF(Method):
         self.metadata["white_bg"] = value
 
     def _setup_eval(self):
+        assert self.checkpoint is not None, "self.checkpoint must be set"
         torch.set_default_dtype(torch.float32)
         torch.manual_seed(20211202)
         np.random.seed(20211202)
@@ -287,14 +294,14 @@ class TensoRF(Method):
 
         self.metadata["dataset_metadata"] = {
             "type": train_dataset["metadata"].get("type"),
-            "name": train_dataset["metadata"].get("name"),
+            "id": train_dataset["metadata"].get("id"),
         }
         config_overrides = (config_overrides or {}).copy()
         base_config = config_overrides.pop("base_config", "your_own_data.txt")
 
         # Load dataset-specific config
         config_name = f"{base_config}"
-        dataset_name = train_dataset["metadata"].get("name")
+        dataset_name = train_dataset["metadata"].get("id")
         if dataset_name == "blender" and config_name != "lego.txt":
             warnings.warn(f"Using wrong config for blender dataset, set 'base_config=lego.txt' in config overrides.")
         if dataset_name == "llff" and config_name != "flower.txt":
@@ -325,11 +332,11 @@ class TensoRF(Method):
         np.random.seed(20211202)
 
         # init dataset
-        train_dataset = TensoRFDataset(train_dataset, transform=self.metadata.get("dataset_transform"), is_stack=False, dataset_name=self.args.dataset_name)
-        self.metadata["dataset_transform"] = train_dataset.transform
+        _train_dataset = TensoRFDataset(train_dataset, transform=self.metadata.get("dataset_transform"), is_stack=False, dataset_name=self.args.dataset_name)
+        self.metadata["dataset_transform"] = _train_dataset.transform
 
-        self.white_bg = train_dataset.white_bg
-        near_far = train_dataset.near_far
+        self.white_bg = _train_dataset.white_bg
+        near_far = _train_dataset.near_far
 
         # init resolution
         upsamp_list = self.args.upsamp_list
@@ -339,7 +346,7 @@ class TensoRF(Method):
 
         # init parameters
         # tensorVM, renderer = init_parameters(args, train_dataset.scene_bbox.to(device), reso_list[0])
-        aabb = train_dataset.scene_bbox.to(self.device)
+        aabb = _train_dataset.scene_bbox.to(self.device)
         self.reso_cur = N_to_reso(self.args.N_voxel_init, aabb)
         self.nSamples = min(self.args.nSamples, cal_n_samples(self.reso_cur, self.args.step_ratio))
 
@@ -380,7 +387,7 @@ class TensoRF(Method):
 
         torch.cuda.empty_cache()
 
-        self.allrays, self.allrgbs = train_dataset.all_rays, train_dataset.all_rgbs
+        self.allrays, self.allrgbs = _train_dataset.all_rays, _train_dataset.all_rgbs
         if not self.args.ndc_ray:
             self.allrays, self.allrgbs = self.tensorf.filtering_rays(self.allrays, self.allrgbs, bbox_only=True)
         self.trainingSampler = SimpleSampler(self.allrays.shape[0], self.args.batch_size)
@@ -402,6 +409,7 @@ class TensoRF(Method):
             N_samples=self.nSamples, white_bg=self.white_bg, ndc_ray=ndc_ray, 
             device=self.device, is_train=True,
         )
+        del alphas_map, depth_map, weights, uncertainty
 
         loss = torch.mean((rgb_map - rgb_train) ** 2)
 
@@ -442,9 +450,9 @@ class TensoRF(Method):
             param_group["lr"] = param_group["lr"] * self.lr_factor
 
         if iteration in self.update_AlphaMask_list:
-            if self.reso_cur[0] * self.reso_cur[1] * self.reso_cur[2] < 256**3:  # update volume resolution
-                reso_mask = self.reso_cur
-            new_aabb = self.tensorf.updateAlphaMask(tuple(reso_mask))
+            if self.reso_mask is None or self.reso_cur[0] * self.reso_cur[1] * self.reso_cur[2] < 256**3:  # update volume resolution
+                self.reso_mask = self.reso_cur
+            new_aabb = self.tensorf.updateAlphaMask(tuple(self.reso_mask))
             if iteration == self.update_AlphaMask_list[0]:
                 self.tensorf.shrink(new_aabb)
                 # tensorVM.alphaMask = None
@@ -476,57 +484,31 @@ class TensoRF(Method):
         return output
 
     @torch.no_grad()
-    def render(self, cameras: Cameras, *, embeddings=None, options=None) -> Iterable[RenderOutput]:
+    def render(self, camera: Cameras, *, options=None) -> RenderOutput:
         del options
-        if embeddings is not None:
-            raise NotImplementedError(f"Optimizing embeddings is not supported for method {self.get_method_info()['name']}")
+        camera = camera.item()  # Ensure there is a single camera
         assert self.metadata.get("dataset_metadata") is not None, "Missing dataset_metadata"
         assert self.metadata.get("dataset_transform") is not None, "Missing dataset_transform"
         test_dataset = TensoRFDataset(
             dict(
-                cameras=cameras,
-                image_paths=[f"{i:06d}.png" for i in range(len(cameras))],
+                cameras=camera[None],
+                image_paths=[f"{0:06d}.png"],
                 metadata=self.metadata["dataset_metadata"],
             ),
             transform=self.metadata.get("dataset_transform"),
             is_stack=True,
             dataset_name=self.args.dataset_name,
         )
-        idx = 0
-        for idx, samples in enumerate(test_dataset.all_rays):
-            W, H = cameras.image_sizes[idx]
-            rays = samples.view(-1, samples.shape[-1])
+        samples = next(iter(test_dataset.all_rays))
+        W, H = camera.image_sizes
+        rays = samples.view(-1, samples.shape[-1])
 
-            rgb_map, _, depth_map, _, _ = self.renderer(rays, self.tensorf, chunk=4096, N_samples=-1, ndc_ray=self.args.ndc_ray, white_bg=self.white_bg, device=self.device)
+        rgb_map, _, depth_map, _, _ = self.renderer(rays, self.tensorf, chunk=4096, N_samples=-1, ndc_ray=self.args.ndc_ray, white_bg=self.white_bg, device=self.device)
 
-            rgb_map = rgb_map.clamp(0.0, 1.0)
-            rgb_map, depth_map = rgb_map.reshape(H, W, 3).cpu(), depth_map.reshape(H, W).cpu()
+        rgb_map = rgb_map.clamp(0.0, 1.0)
+        rgb_map, depth_map = rgb_map.reshape(H, W, 3).cpu(), depth_map.reshape(H, W).cpu()
 
-            yield {
-                "color": rgb_map.detach().numpy(),
-                "depth": depth_map.detach().numpy(),
-            }
-
-    def optimize_embeddings(
-        self, 
-        dataset: Dataset,
-        embeddings: Optional[Sequence[np.ndarray]] = None
-    ) -> Iterable[OptimizeEmbeddingsOutput]:
-        """
-        Optimize embeddings for each image in the dataset.
-
-        Args:
-            dataset: Dataset.
-            embeddings: Optional initial embeddings.
-        """
-        raise NotImplementedError()
-
-    def get_train_embedding(self, index: int) -> Optional[np.ndarray]:
-        """
-        Get the embedding for a training image.
-
-        Args:
-            index: Index of the image.
-        """
-        return None
-
+        return {
+            "color": rgb_map.detach().numpy(),
+            "depth": depth_map.detach().numpy(),
+        }

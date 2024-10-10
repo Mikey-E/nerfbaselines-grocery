@@ -1,7 +1,7 @@
-from ..registry import register
+from nerfbaselines import register
 
 
-register(name="bundler", spec={
+register({
+    "id": "bundler",
     "load_dataset_function": ".bundler:load_bundler_dataset",
-    "priority": 50,
 })

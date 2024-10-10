@@ -1,9 +1,10 @@
 import os
-from ..registry import register, MethodSpec
+from nerfbaselines import register, MethodSpec
 
 
 GaussianOpacityFieldsSpec: MethodSpec = {
-    "method": ".gaussian_opacity_fields:GaussianOpacityFields",
+    "id": "gaussian-opacity-fields",
+    "method_class": ".gaussian_opacity_fields:GaussianOpacityFields",
     "conda": {
         "environment_name": os.path.split(__file__[:-len("_spec.py")])[-1].replace("_", "-"),
         "python_version": "3.8",
@@ -17,7 +18,7 @@ sed -i '/import open3d as o3d/d' train.py
 conda install -y conda-build
 conda develop .
 
-conda install -y mkl==2023.1.0 pytorch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 pytorch-cuda=11.7 -c pytorch -c nvidia
+conda install -y mkl==2023.1.0 pytorch==2.0.1 torchvision==0.15.2 pytorch-cuda=11.7 'numpy<2.0.0' -c pytorch -c nvidia
 conda install -y cudatoolkit-dev=11.7 gcc_linux-64=11 gxx_linux-64=11 make=4.3 cmake=3.28.3 libcxx=17.0.6 -c conda-forge
 conda install -c conda-forge -y nodejs==20.9.0
 conda install -y -c conda-forge conda-forge::gmp==6.3.0 conda-forge::cgal==5.6.1
@@ -28,6 +29,7 @@ pip install lpips==0.1.4
 
 pip install submodules/diff-gaussian-rasterization
 pip install submodules/simple-knn/
+if ! python -c 'import cv2'; then pip install opencv-python-headless; fi
 
 # Add LD_LIBRARY_PATH to the environment
 mkdir -p $CONDA_PREFIX/etc/conda/activate.d
@@ -40,7 +42,7 @@ cd submodules/tetra-triangulation
 cmake . && make && pip install -e . || exit 1
 
 function nb-post-install () {
-if [ "$NB_DOCKER_BUILD" = "1" ]; then
+if [ "$NERFBASELINES_DOCKER_BUILD" = "1" ]; then
 # Reduce size of the environment by removing unused files
 find "$CONDA_PREFIX" -name '*.a' -delete
 find "$CONDA_PREFIX" -type d -name 'nsight*' -exec rm -r {} +
@@ -64,13 +66,23 @@ fi
         "link": "https://niujinshuchong.github.io/gaussian-opacity-fields/",
         "licenses": [{"name": "custom, research only", "url": "https://raw.githubusercontent.com/autonomousvision/gaussian-opacity-fields/main/LICENSE.md"}],
     },
-    "dataset_overrides": {
-        "blender": { "white_background": True },
-        "dtu": { "use_decoupled_appearance": True, "lambda_distortion": 100 },
-        "tanksandtemples": { "use_decoupled_appearance": True },
-        "phototourism": { "use_decoupled_appearance": True },
+    "presets": {
+        "blender": { "@apply": [{"dataset": "blender"}], "white_background": True },
+        "dtu": { "@apply": [{"dataset": "dtu"}], "use_decoupled_appearance": True, "lambda_distortion": 100 },
+        "decoupled-appearance": {
+            "@apply": [
+                {"dataset": "phototourism"},
+                {"dataset": "tanksandtemples"},
+            ],
+            "use_decoupled_appearance": True
+        }
     },
+    "implementation_status": {
+        "blender": "working",
+        "mipnerf360": "working",
+        "tanksandtemples": "working",
+    }
 }
 
 
-register(GaussianOpacityFieldsSpec, name="gaussian-opacity-fields")
+register(GaussianOpacityFieldsSpec)

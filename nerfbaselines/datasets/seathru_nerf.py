@@ -1,3 +1,4 @@
+import json
 import zipfile
 import sys
 import logging
@@ -5,9 +6,9 @@ import os
 import numpy as np
 from typing import Optional
 from contextlib import contextmanager
-from nerfbaselines.types import NB_PREFIX
-from ._common import DatasetNotFoundError, dataset_index_select
-from .colmap import load_colmap_dataset
+from nerfbaselines import NB_PREFIX, DatasetNotFoundError
+from nerfbaselines.datasets import dataset_index_select
+from nerfbaselines.datasets.colmap import load_colmap_dataset
 
 
 DATASET_NAME = "seathru-nerf"
@@ -59,7 +60,7 @@ def load_seathru_nerf_dataset(path: str, split: Optional[str], **kwargs):
     import numpy as np
     images_path = "images_wb"
     dataset = load_colmap_dataset(path, split=None, images_path=images_path, **kwargs) 
-    
+
     # Load bounds
     poses_bounds = np.load(os.path.join(path, "poses_bounds.npy"))
     nears_fars = poses_bounds[:, -2:]
@@ -67,10 +68,7 @@ def load_seathru_nerf_dataset(path: str, split: Optional[str], **kwargs):
     dataset["cameras"] = dataset["cameras"].replace(nears_fars=nears_fars)
 
     # Set dataset metadata
-    dataset["metadata"]["name"] = DATASET_NAME
     dataset["metadata"]["type"] = "forward-facing"
-    dataset["metadata"]["viewer_transform"] = np.eye(4, dtype=np.float32)
-    dataset["metadata"]["viewer_initial_pose"] = dataset["cameras"].poses[0][..., :3, :4]
 
     # Apply train/test split
     train_indices, test_indices = _select_indices_llff(dataset["image_paths"], llffhold=8)
@@ -103,5 +101,16 @@ def download_seathru_nerf_dataset(path: str, output: str):
                 if zip_info.filename.startswith("Images_wb/"):
                     zip_info.filename = "images_wb/" + zip_info.filename[len("Images_wb/") :]
                 zip_ref.extract(zip_info, output)
+    with open(os.path.join(str(output), "nb-info.json"), "w", encoding="utf8") as f2:
+        json.dump({
+            "loader": load_seathru_nerf_dataset.__module__ + ":" + load_seathru_nerf_dataset.__name__,
+            "loader_kwargs": {},
+            "id": DATASET_NAME,
+            "scene": capture_name,
+            "evaluation_protocol": "default",
+            "type": "forward-facing",
+        }, f2)
     logging.info(f"Extracted {path} to {output}")
 
+
+__all__ = ["load_seathru_nerf_dataset", "download_seathru_nerf_dataset"]

@@ -9,56 +9,59 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+# NOTE: This code modifies 3DGS with the support for cx, cy not in the center of the image
+# It also adds support for sampling masks
+
+import dataclasses
 import warnings
 import random
 import itertools
-import json
-from pathlib import Path
-import subprocess
 import shlex
 import logging
 import copy
-from typing import Optional, Iterable, Sequence
+from typing import Optional
 import os
 import tempfile
 import numpy as np
 from PIL import Image
-from nerfbaselines.types import Method, MethodInfo, ModelInfo, OptimizeEmbeddingsOutput, RenderOutput
-from nerfbaselines.types import Cameras, camera_model_to_int, Dataset
-from nerfbaselines.utils import cached_property, flatten_hparams, remap_error
-from nerfbaselines.pose_utils import get_transform_and_scale
-from nerfbaselines.math_utils import rotate_spherical_harmonics, rotation_matrix_to_quaternion, quaternion_multiply
-from nerfbaselines.io import wget
-
-try:
-    from shlex import join as shlex_join
-except ImportError:
-
-    def shlex_join(split_command):
-        """Return a shelshlex.ped string from *split_command*."""
-        return " ".join(shlex.quote(arg) for arg in split_command)
-
+from nerfbaselines import (
+    Method, MethodInfo, ModelInfo, RenderOutput, Cameras, camera_model_to_int, Dataset
+)
+import shlex
 
 from argparse import ArgumentParser
 
 import torch
 from random import randint
 
-from utils.general_utils import PILtoTorch
-from arguments import ModelParams, PipelineParams, OptimizationParams # noqa: E402
-from gaussian_renderer import render # noqa: E402
-from scene import GaussianModel # noqa: E402
-import scene.dataset_readers
-from scene.dataset_readers import SceneInfo, getNerfppNorm, focal2fov  # noqa: E402
-from scene.dataset_readers import CameraInfo as _old_CameraInfo
-from scene.dataset_readers import storePly, fetchPly  # noqa: E402
-from scene.gaussian_model import inverse_sigmoid, build_rotation, PlyData, PlyElement  # noqa: E402
-from utils.general_utils import safe_state  # noqa: E402
-from utils.graphics_utils import fov2focal  # noqa: E402
-from utils.loss_utils import l1_loss, ssim  # noqa: E402
-from utils.sh_utils import SH2RGB  # noqa: E402
-from scene import Scene, sceneLoadTypeCallbacks  # noqa: E402
-from utils import camera_utils  # noqa: E402
+from utils.general_utils import PILtoTorch  # type: ignore
+from arguments import ModelParams, PipelineParams, OptimizationParams #  type: ignore
+from gaussian_renderer import render # type: ignore
+from scene import GaussianModel # type: ignore
+import scene.dataset_readers  # type: ignore
+from scene.dataset_readers import SceneInfo, getNerfppNorm, focal2fov  # type: ignore
+from scene.dataset_readers import CameraInfo as _old_CameraInfo  # type: ignore
+from scene.dataset_readers import storePly, fetchPly  # type: ignore
+from utils.general_utils import safe_state  # type: ignore
+from utils.graphics_utils import fov2focal  # type: ignore
+from utils.loss_utils import l1_loss, ssim  # type: ignore
+from utils.sh_utils import SH2RGB  # type: ignore
+from scene import Scene, sceneLoadTypeCallbacks  # type: ignore
+from utils import camera_utils  # type: ignore
+
+
+def flatten_hparams(hparams, *, separator: str = "/", _prefix: str = ""):
+    flat = {}
+    if dataclasses.is_dataclass(hparams):
+        hparams = {f.name: getattr(hparams, f.name) for f in dataclasses.fields(hparams)}
+    for k, v in hparams.items():
+        if _prefix:
+            k = f"{_prefix}{separator}{k}"
+        if isinstance(v, dict) or dataclasses.is_dataclass(v):
+            flat.update(flatten_hparams(v, _prefix=k, separator=separator).items())
+        else:
+            flat[k] = v
+    return flat
 
 
 def getProjectionMatrixFromOpenCV(w, h, fx, fy, cx, cy, znear, zfar):
@@ -171,12 +174,12 @@ def _config_overrides_to_args_list(args_list, config_overrides):
 def _convert_dataset_to_gaussian_splatting(dataset: Optional[Dataset], tempdir: str, white_background: bool = False, scale_coords=None):
     if dataset is None:
         return SceneInfo(None, [], [], nerf_normalization=dict(radius=None, translate=None), ply_path=None)
-    assert np.all(dataset["cameras"].camera_types == camera_model_to_int("pinhole")), "Only pinhole cameras supported"
+    assert np.all(dataset["cameras"].camera_models == camera_model_to_int("pinhole")), "Only pinhole cameras supported"
 
     cam_infos = []
     for idx, extr in enumerate(dataset["cameras"].poses):
+        del extr
         intrinsics = dataset["cameras"].intrinsics[idx]
-        width, height = dataset["cameras"].image_sizes[idx]
         pose = dataset["cameras"].poses[idx]
         image_path = dataset["image_paths"][idx] if dataset["image_paths"] is not None else f"{idx:06d}.png"
         image_name = (
@@ -191,9 +194,9 @@ def _convert_dataset_to_gaussian_splatting(dataset: Optional[Dataset], tempdir: 
             norm_data = im_data / 255.0
             arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + (1 - norm_data[:, :, 3:4]) * bg
             im_data = np.array(arr * 255.0, dtype=np.uint8)
-        if not white_background and dataset["metadata"].get("name") == "blender":
+        if not white_background and dataset["metadata"].get("id") == "blender":
             warnings.warn("Blender scenes are expected to have white background. If the background is not white, please set white_background=True in the dataset loader.")
-        elif white_background and dataset["metadata"].get("name") != "blender":
+        elif white_background and dataset["metadata"].get("id") != "blender":
             warnings.warn("white_background=True is set, but the dataset is not a blender scene. The background may not be white.")
         image = Image.fromarray(im_data)
         sampling_mask = None
@@ -218,7 +221,7 @@ def _convert_dataset_to_gaussian_splatting(dataset: Optional[Dataset], tempdir: 
     if scale_coords is not None:
         points3D_xyz = points3D_xyz * scale_coords
     points3D_rgb = dataset["points3D_rgb"]
-    if points3D_xyz is None and dataset["metadata"].get("name", None) == "blender":
+    if points3D_xyz is None and dataset["metadata"].get("id", None) == "blender":
         # https://github.com/graphdeco-inria/gaussian-splatting/blob/2eee0e26d2d5fd00ec462df47752223952f6bf4e/scene/dataset_readers.py#L221C4-L221C4
         num_pts = 100_000
         logging.info(f"generating random point cloud ({num_pts})...")
@@ -235,25 +238,24 @@ def _convert_dataset_to_gaussian_splatting(dataset: Optional[Dataset], tempdir: 
 
 
 class GaussianSplatting(Method):
-    _method_name: str = "gaussian-splatting"
-
-    @remap_error
     def __init__(self, *,
                  checkpoint: Optional[str] = None,
                  train_dataset: Optional[Dataset] = None,
                  config_overrides: Optional[dict] = None):
         self.checkpoint = checkpoint
-        self.gaussians = None
         self.background = None
         self.step = 0
 
-        self.scene = None
-
         # Setup parameters
         self._args_list = ["--source_path", "<empty>", "--resolution", "1", "--eval"]
+        self._loaded_step = None
         if checkpoint is not None:
+            if not os.path.exists(checkpoint):
+                raise RuntimeError(f"Model directory {checkpoint} does not exist")
             with open(os.path.join(checkpoint, "args.txt"), "r", encoding="utf8") as f:
                 self._args_list = shlex.split(f.read())
+            self._loaded_step = sorted(int(x[x.find("-") + 1 : x.find(".")]) for x in os.listdir(str(checkpoint)) if x.startswith("chkpnt-"))[-1]
+
         # Fix old checkpoints
         if "--resolution" not in self._args_list:
             self._args_list.extend(("--resolution", "1"))
@@ -265,7 +267,8 @@ class GaussianSplatting(Method):
 
         if self.checkpoint is None:
             # Verify parameters are set correctly
-            if train_dataset["metadata"].get("name") == "blender":
+            assert train_dataset is not None, "train_dataset must be set if checkpoint is not provided"
+            if train_dataset["metadata"].get("id") == "blender":
                 assert self.dataset.white_background, "white_background should be True for blender dataset"
 
         self._setup(train_dataset)
@@ -293,7 +296,8 @@ class GaussianSplatting(Method):
             self.gaussians.training_setup(self.opt)
         if train_dataset is None or self.checkpoint:
             info = self.get_info()
-            loaded_step = info["loaded_step"]
+            loaded_step = info.get("loaded_step")
+            assert loaded_step is not None, "Could not infer loaded step"
             (model_params, self.step) = torch.load(str(self.checkpoint) + f"/chkpnt-{loaded_step}.pth")
             self.gaussians.restore(model_params, self.opt)
 
@@ -304,20 +308,10 @@ class GaussianSplatting(Method):
         if train_dataset is not None:
             self._input_points = (train_dataset["points3D_xyz"], train_dataset["points3D_rgb"])
 
-    @cached_property
-    def _loaded_step(self):
-        loaded_step = None
-        if self.checkpoint is not None:
-            if not os.path.exists(self.checkpoint):
-                raise RuntimeError(f"Model directory {self.checkpoint} does not exist")
-            loaded_step = sorted(int(x[x.find("-") + 1 : x.find(".")]) for x in os.listdir(str(self.checkpoint)) if x.startswith("chkpnt-"))[-1]
-        return loaded_step
-
     @classmethod
     def get_method_info(cls):
-        assert cls._method_name is not None, "Method was not properly registered"
         return MethodInfo(
-            name=cls._method_name,
+            method_id="",
             required_features=frozenset(("color", "points3D_xyz")),
             supported_camera_models=frozenset(("pinhole",)),
             supported_outputs=("color",),
@@ -345,9 +339,11 @@ class GaussianSplatting(Method):
             try:
                 info = self.get_info()
                 def colmap_loader(*args, **kwargs):
+                    del args, kwargs
                     return _convert_dataset_to_gaussian_splatting(dataset, td, white_background=self.dataset.white_background, scale_coords=self.dataset.scale_coords)
                 sceneLoadTypeCallbacks["Colmap"] = colmap_loader
-                scene = Scene(opt, self.gaussians, load_iteration=info["loaded_step"] if dataset is None else None)
+                loaded_step = info.get("loaded_step")
+                scene = Scene(opt, self.gaussians, load_iteration=str(loaded_step) if dataset is None else None)
                 # NOTE: This is a hack to match the RNG state of GS on 360 scenes
                 _tmp = list(range((len(next(iter(scene.train_cameras.values()))) + 6) // 7))
                 random.shuffle(_tmp)
@@ -355,24 +351,19 @@ class GaussianSplatting(Method):
             finally:
                 sceneLoadTypeCallbacks["Colmap"] = backup
 
-    def render(self, cameras: Cameras, *, embeddings=None, options=None) -> Iterable[RenderOutput]:
+    def render(self, camera: Cameras, *, options=None) -> RenderOutput:
         del options
-        if embeddings is not None:
-            raise NotImplementedError(f"Optimizing embeddings is not supported for method {self.get_method_info()['name']}")
-        assert np.all(cameras.camera_types == camera_model_to_int("pinhole")), "Only pinhole cameras supported"
-        sizes = cameras.image_sizes
-        poses = cameras.poses
-        intrinsics = cameras.intrinsics
+        camera = camera.item()
+        assert np.all(camera.camera_models == camera_model_to_int("pinhole")), "Only pinhole cameras supported"
 
         with torch.no_grad():
-            for i, pose in enumerate(poses):
-                viewpoint_cam = _load_caminfo(i, pose, intrinsics[i], f"{i:06d}.png", sizes[i], scale_coords=self.dataset.scale_coords)
-                viewpoint = loadCam(self.dataset, i, viewpoint_cam, 1.0)
-                image = torch.clamp(render(viewpoint, self.gaussians, self.pipe, self.background)["render"], 0.0, 1.0)
-                color = image.detach().permute(1, 2, 0).cpu().numpy()
-                yield {
-                    "color": color,
-                }
+            viewpoint_cam = _load_caminfo(0, camera.poses, camera.intrinsics, f"{0:06d}.png", camera.image_sizes, scale_coords=self.dataset.scale_coords)
+            viewpoint = loadCam(self.dataset, 0, viewpoint_cam, 1.0)
+            image = torch.clamp(render(viewpoint, self.gaussians, self.pipe, self.background)["render"], 0.0, 1.0)
+            color = image.detach().permute(1, 2, 0).cpu().numpy()
+            return {
+                "color": color,
+            }
 
     def train_iteration(self, step):
         self.step = step
@@ -387,7 +378,7 @@ class GaussianSplatting(Method):
 
         # Pick a random Camera
         if not self._viewpoint_stack:
-            loadCam.was_called = False
+            loadCam.was_called = False  # type: ignore
             self._viewpoint_stack = self.scene.getTrainCameras().copy()
             if any(not getattr(cam, "_patched", False) for cam in self._viewpoint_stack):
                 raise RuntimeError("could not patch loadCam!")
@@ -445,94 +436,15 @@ class GaussianSplatting(Method):
         self.gaussians.save_ply(os.path.join(str(path), f"point_cloud/iteration_{self.step}", "point_cloud.ply"))
         torch.save((self.gaussians.capture(), self.step), str(path) + f"/chkpnt-{self.step}.pth")
         with open(str(path) + "/args.txt", "w", encoding="utf8") as f:
-            f.write(shlex_join(self._args_list))
+            f.write(" ".join(shlex.quote(x) for x in self._args_list))
 
-    def export_demo(self, path: str, *, viewer_transform, viewer_initial_pose):
-        model: GaussianModel = self.gaussians
-        transform, scale = get_transform_and_scale(viewer_transform)
-        R, t = transform[..., :3, :3], transform[..., :3, 3]
-        xyz = model._xyz.detach().cpu().numpy()
-        xyz = (xyz @ R.T + t[None, :]) * scale
-        normals = np.zeros_like(xyz)
+    def export_demo(self, path: str, *, options=None):
+        from ._gaussian_splatting_demo import export_demo
 
-        f_dc = model._features_dc.detach().cpu().transpose(2, 1).numpy()
-        f_rest = model._features_rest.detach().cpu().transpose(2, 1).numpy()
-
-        # Rotate sh using Winger's group on SO3
-        features = rotate_spherical_harmonics(R, np.concatenate((f_dc, f_rest), axis=-1))
-        features = features.reshape(features.shape[0], -1)
-        f_dc, f_rest = features[..., :f_dc.shape[-1]], features[..., f_dc.shape[-1]:]
-
-        # fuse opacity and scale
-        opacities = model.get_opacity.detach().cpu().numpy()
-        gs_scale = model.scaling_inverse_activation(model.get_scaling * scale).detach().cpu().numpy()
-        
-        rotation = model.get_rotation.detach().cpu().numpy()
-        rotation_update = rotation_matrix_to_quaternion(R)
-        rotation = quaternion_multiply(rotation_update, rotation)
-
-        dtype_full = [(attribute, 'f4') for attribute in model.construct_list_of_attributes()]
-
-        elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, gs_scale, rotation), axis=1)
-        elements[:] = list(map(tuple, attributes))
-        el = PlyElement.describe(elements, 'vertex')
-
-        with tempfile.TemporaryDirectory() as tmpdirname:
-            ply_file = os.path.join(tmpdirname, "gaussian_splat.ply")
-            out_file = os.path.join(tmpdirname, "gaussian_splat.ksplat")
-            ply_data = PlyData([el])
-            ply_data.write(ply_file)
-            logging.info(f"Converting to ksplat format: {ply_file} -> {out_file}")
-
-            # Convert to ksplat format
-            subprocess.check_call(["bash", "-c", f"""
-if [ ! -e /tmp/gaussian-splats-3d ]; then
-    rm -rf "/tmp/gaussian-splats-3d-tmp"
-    git clone https://github.com/mkkellogg/GaussianSplats3D.git "/tmp/gaussian-splats-3d-tmp"
-    cd /tmp/gaussian-splats-3d-tmp
-    npm install
-    npm run build
-    cd "$PWD"
-    mv /tmp/gaussian-splats-3d-tmp /tmp/gaussian-splats-3d
-fi
-node /tmp/gaussian-splats-3d/util/create-ksplat.js {shlex.quote(ply_file)} {shlex.quote(out_file)}
-"""])
-            output = Path(path)
-            os.rename(out_file, output / "scene.ksplat")
-            wget(
-                "https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/7b1d2a092d0d2dd2b7270b6f12f13605de26f214/coi-serviceworker.min.js", 
-                output / "coi-serviceworker.min.js")
-            wget(
-                "https://raw.githubusercontent.com/jkulhanek/nerfbaselines/bd328ea7d68942eea76037baed50501daa3a2425/web/public/three.module.min.js",
-                output / "three.module.min.js")
-            wget(
-                "https://raw.githubusercontent.com/jkulhanek/nerfbaselines/bd328ea7d68942eea76037baed50501daa3a2425/web/public/gaussian-splats-3d.module.min.js",
-                output / "gaussian-splats-3d.module.min.js")
-            format_vector = lambda v: "[" + ",".join(f'{x:.3f}' for x in v) + "]"  # noqa: E731
-            with (output / "index.html").open("w", encoding="utf8") as f, \
-                open(Path(__file__).parent / "gaussian_splatting_demo.html", "r", encoding="utf8") as template:
-                f.write(template.read().replace("{up}", format_vector(viewer_initial_pose.reshape(-1))))
-
-    def optimize_embeddings(
-        self, 
-        dataset: Dataset,
-        embeddings: Optional[Sequence[np.ndarray]] = None
-    ) -> Iterable[OptimizeEmbeddingsOutput]:
-        """
-        Optimize embeddings for each image in the dataset.
-
-        Args:
-            dataset: Dataset.
-            embeddings: Optional initial embeddings.
-        """
-        return None
-
-    def get_train_embedding(self, index: int) -> Optional[np.ndarray]:
-        """
-        Get the embedding for a training image.
-
-        Args:
-            index: Index of the image.
-        """
-        return None
+        export_demo(path, 
+                    options=options,
+                    xyz=self.gaussians.get_xyz.detach().cpu().numpy(),
+                    scales=self.gaussians.get_scaling.detach().cpu().numpy(),
+                    opacities=self.gaussians.get_opacity.detach().cpu().numpy(),
+                    quaternions=self.gaussians.get_rotation.detach().cpu().numpy(),
+                    spherical_harmonics=self.gaussians.get_features.transpose(1, 2).detach().cpu().numpy())

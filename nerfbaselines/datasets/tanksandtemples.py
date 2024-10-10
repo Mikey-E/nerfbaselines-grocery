@@ -1,21 +1,21 @@
+import json
+import os
 import logging
-import shutil
-import requests
 from pathlib import Path
-from typing import Union
-import tarfile
-from tqdm import tqdm
-import tempfile
+from typing import Union, TypeVar
 import numpy as np
-from ..utils import assert_not_none
-from ..types import UnloadedDataset
-from ._common import DatasetNotFoundError, get_scene_scale, get_default_viewer_transform, dataset_index_select
-from .colmap import load_colmap_dataset
+from nerfbaselines import DatasetNotFoundError
+from nerfbaselines.datasets import dataset_index_select
+from nerfbaselines.datasets.colmap import load_colmap_dataset
+from nerfbaselines._constants import DATASETS_REPOSITORY
+from ._common import download_dataset_wrapper, download_archive_dataset
 
 
+T = TypeVar("T")
 DATASET_NAME = "tanksandtemples"
-BASE_URL = "https://huggingface.co/datasets/jkulhanek/nerfbaselines-data/resolve/main/tanksandtemples"
+BASE_URL = f"https://{DATASETS_REPOSITORY}/resolve/main/tanksandtemples"
 _URL = f"{BASE_URL}/{{scene}}.tar.gz"
+del _URL
 _URL2DOWN = f"{BASE_URL}/{{scene}}_2down.tar.gz"
 SCENES = {
     # advanced
@@ -55,79 +55,53 @@ def _select_indices_llff(image_names, llffhold=8):
     return indices_train, indices_test
 
 
-def load_tanksandtemples_dataset(path: Union[Path, str], split: str, downscale_factor: int = 2, **kwargs) -> UnloadedDataset:
-    path = Path(path)
-    if split:
-        assert split in {"train", "test"}
-    if DATASET_NAME not in str(path) or not any(s in str(path).lower() for s in SCENES):
-        raise DatasetNotFoundError(f"{DATASET_NAME} and {set(SCENES.keys())} is missing from the dataset path: {path}")
-
-    # Load TT dataset
-    images_path = "images" if downscale_factor == 1 else f"images_{downscale_factor}"
-    scene = next((x for x in SCENES if x in str(path)), None)
-    assert scene is not None, f"Scene not found in path {path}"
-
-    dataset = load_colmap_dataset(path, images_path=images_path, split=None, **kwargs)
-    dataset["metadata"]["name"] = DATASET_NAME
-    dataset["metadata"]["scene"] = scene
-    dataset["metadata"]["downscale_factor"] = downscale_factor
-    dataset["metadata"]["expected_scene_scale"] = get_scene_scale(dataset["cameras"], None)
-    dataset["metadata"]["type"] = None
-    viewer_transform, viewer_pose = get_default_viewer_transform(dataset["cameras"].poses, None)
-    dataset["metadata"]["viewer_transform"] = viewer_transform
-    dataset["metadata"]["viewer_initial_pose"] = viewer_pose
-    dataset["metadata"]["evaluation_protocol"] = "default"
-    indices_train, indices_test = _select_indices_llff(dataset["image_paths"])
-    indices = indices_train if split == "train" else indices_test
-    return dataset_index_select(dataset, indices)
+def _write_splits(output):
+    # Write splits
+    with open(os.path.join(output, "nb-info.json"), "r", encoding="utf8") as f:
+        dataset_info = json.load(f)
+    try:
+        colmap_dataset = load_colmap_dataset(output, split=None, **dataset_info["loader_kwargs"])
+    except DatasetNotFoundError as e:
+        raise RuntimeError(f"Failed to load dataset {output} after downloading.") from e
+    indices_train, indices_test = _select_indices_llff(colmap_dataset["image_paths"])
+    with open(os.path.join(str(output), "train_list.txt"), "w", encoding="utf8") as f:
+        for img_name in dataset_index_select(colmap_dataset, indices_train)["image_paths"]:
+            f.write(os.path.relpath(img_name, colmap_dataset["image_paths_root"]) + "\n")
+    with open(os.path.join(str(output), "test_list.txt"), "w", encoding="utf8") as f:
+        for img_name in dataset_index_select(colmap_dataset, indices_test)["image_paths"]:
+            f.write(os.path.relpath(img_name, colmap_dataset["image_paths_root"]) + "\n")
 
 
-def download_tanksandtemples_dataset(path: str, output: Union[Path, str]) -> None:
-    output = Path(output)
-    if not path.startswith(f"{DATASET_NAME}/") and path != DATASET_NAME:
-        raise DatasetNotFoundError("Dataset path must be equal to 'tanksandtemples' or must start with 'tanksandtemples/'.")
-
-    if path == DATASET_NAME:
-        for scene in SCENES:
-            download_tanksandtemples_dataset(f"{DATASET_NAME}/{scene}", output/scene)
-        return
-
-    scene = path.split("/")[-1]
+@download_dataset_wrapper(SCENES, DATASET_NAME)
+def download_tanksandtemples_dataset(path: str, output: str) -> None:
+    dataset_name, scene = path.split("/", 1)
     if SCENES.get(scene) is None:
         raise RuntimeError(f"Unknown scene {scene}")
-    if SCENES[scene] is False:
-        raise DatasetNotFoundError(f"Scene {scene} is not available in current release of the tanksandtemples dataset.")
     url = _URL2DOWN.format(scene=scene)
-    response = requests.get(url, stream=True)
-    response.raise_for_status()
-    total_size_in_bytes = int(response.headers.get("content-length", 0))
-    block_size = 1024  # 1 Kibibyte
-    progress_bar = tqdm(total=total_size_in_bytes, unit="iB", unit_scale=True, desc=f"Downloading {url.split('/')[-1]}", dynamic_ncols=True)
-    with tempfile.TemporaryFile("rb+") as file:
-        for data in response.iter_content(block_size):
-            progress_bar.update(len(data))
-            file.write(data)
-        file.flush()
-        file.seek(0)
-        progress_bar.close()
-        if total_size_in_bytes != 0 and progress_bar.n != total_size_in_bytes:
-            logging.error(f"Failed to download dataset. {progress_bar.n} bytes downloaded out of {total_size_in_bytes} bytes.")
+    downscale_factor = 2
+    prefix = scene + "/"
+    nb_info = {
+        "id": dataset_name,
+        "scene": scene,
+        "loader": "colmap",
+        "evaluation_protocol": "default",
+        "type": "object-centric",
+        "downscale_factor": downscale_factor,
+        "loader_kwargs": {
+            "images_path": f"images_{downscale_factor}",
+        },
+    }
+    download_archive_dataset(url, output, 
+                             archive_prefix=prefix, 
+                             nb_info=nb_info,
+                             callback=_write_splits,
+                             file_type="tar.gz")
+    logging.info(f"Downloaded {DATASET_NAME}/{scene} to {output}")
 
-        with tarfile.open(fileobj=file, mode="r:gz") as z:
-            output_tmp = output.with_suffix(".tmp")
-            output_tmp.mkdir(exist_ok=True, parents=True)
-            for info in z.getmembers():
-                if not info.name.startswith(scene + "/"):
-                    continue
-                relname = info.name[len(scene) + 1 :]
-                target = output_tmp / relname
-                target.parent.mkdir(exist_ok=True, parents=True)
-                if info.isdir():
-                    target.mkdir(exist_ok=True, parents=True)
-                else:
-                    with assert_not_none(z.extractfile(info)) as source, open(target, "wb") as target:
-                        shutil.copyfileobj(source, target)
 
-            shutil.rmtree(output, ignore_errors=True)
-            shutil.move(str(output_tmp), str(output))
-            logging.info(f"Downloaded {DATASET_NAME}/{scene} to {output}")
+def load_tanksandtemples_dataset(path, *args, **kwargs):
+    del args, kwargs
+    raise RuntimeError(f"The dataset was likely downloaded with an older version of NerfBaselines. Please remove `{path}` and try again.")
+
+
+__all__ = ["download_tanksandtemples_dataset"]

@@ -1,11 +1,12 @@
 import sys
 import shutil
 import json
-from typing import Iterable, cast
+from typing import cast
 from pathlib import Path
 import os
 import numpy as np
-from nerfbaselines import Method, MethodInfo, Cameras, RenderOutput, Indices, ModelInfo
+from nerfbaselines import Method, MethodInfo, Cameras, RenderOutput, ModelInfo
+from nerfbaselines.utils import Indices
 from nerfbaselines.datasets import _colmap_utils as colmap_utils
 from nerfbaselines import metrics
 from unittest import mock
@@ -43,6 +44,7 @@ class _TestMethod(Method):
     _render_call_step = []
 
     def __init__(self, *args, train_dataset=None, **kwargs):
+        del args, kwargs
         if train_dataset is not None:
             self._setup_train_dataset.append(train_dataset)
 
@@ -56,7 +58,7 @@ class _TestMethod(Method):
     @classmethod
     def get_method_info(cls) -> MethodInfo:
         return {
-            "name": "_test",
+            "method_id": "_test",
             "required_features": frozenset(("color",)),
             "supported_camera_models": frozenset(("pinhole",)),
         }
@@ -64,7 +66,7 @@ class _TestMethod(Method):
 
     def get_info(self) -> ModelInfo:
         return {
-            "name": "_test",
+            "method_id": "_test",
             "loaded_step": None,
             "supported_camera_models": frozenset(
                 (
@@ -77,29 +79,21 @@ class _TestMethod(Method):
             "num_iterations": 13,
         }
 
-    def optimize_embeddings(self, *args, **kwargs):
-        raise NotImplementedError()
-
-    def render(self, cameras: Cameras, *, embeddings=None, **kwargs) -> Iterable[RenderOutput]:
-        del kwargs
-        assert embeddings is None
+    def render(self, camera: Cameras, *, options=None) -> RenderOutput:
+        del options
         _TestMethod._render_call_step.append(_TestMethod._last_step)
-        for i in range(len(cameras)):
-            cam = cameras[i]
-            assert cam.image_sizes is not None
-            yield {
-                "color": np.zeros([cam.image_sizes[1], cam.image_sizes[0], 3], dtype=np.float32),
-            }
+        cam = camera.item()
+        assert cam.image_sizes is not None
+        return {
+            "color": np.zeros([cam.image_sizes[1], cam.image_sizes[0], 3], dtype=np.float32),
+        }
 
-    def train_iteration(self, step: int):
+    def train_iteration(self, step: int) -> dict:
         _TestMethod._last_step = step
         return {"loss": 0.1}
 
     def save(self, path: str):
         self._save_paths.append(path)
-
-    def get_train_embedding(self, *args, **kwargs):
-        raise NotImplementedError()
 
 
 
@@ -124,6 +118,7 @@ def wandb_init_run():
 
 @pytest.mark.parametrize("vis", ["none", "wandb", "tensorboard", "wandb,tensorboard"])
 def test_train_command(mock_extras, tmp_path, wandb_init_run, vis):
+    del mock_extras, wandb_init_run
     # if sys.version_info[:2] == (3, 7) and vis == "tensorboard":
     #     # TODO: Investigate why this test fails in Python 3.7
     #     pytest.skip("for some reason this test fails in Python 3.7 when run together with the other tests, but passes when run alone.")
@@ -131,15 +126,18 @@ def test_train_command(mock_extras, tmp_path, wandb_init_run, vis):
     metrics._LPIPS_GPU_AVAILABLE = None
     sys.modules.pop("nerfbaselines._metrics_lpips", None)
     _patch_wandb_for_py37()
-    from nerfbaselines.training import train_command
-    from nerfbaselines.registry import methods_registry as registry, MethodSpec
+    from nerfbaselines.cli._train import train_command
+    from nerfbaselines import MethodSpec
+    from nerfbaselines._registry import methods_registry as registry
     import wandb
 
     _ns_prefix_backup = os.environ.get("NS_PREFIX", None)
+    cwd = os.getcwd()
     try:
         os.environ["NS_PREFIX"] = str(tmp_path / "prefix")
         spec: MethodSpec = {
-            "method": _TestMethod.__module__ + ":_TestMethod",
+            "id": "_test",
+            "method_class": _TestMethod.__module__ + ":_TestMethod",
             "conda": {
                 "environment_name": "_test",
                 "python_version": "3.10",
@@ -148,11 +146,11 @@ def test_train_command(mock_extras, tmp_path, wandb_init_run, vis):
         }
         registry["_test"] = spec
 
-        # train_command.callback(method, checkpoint, data, output, verbose, backend, eval_single_iters, eval_all_iters, logger="none")
-        make_dataset(tmp_path / "data")
+        # train_command.callback(method, checkpoint, data, output, backend, eval_single_iters, eval_all_iters, logger="none")
+        make_dataset(tmp_path / "data", num_images=10)
         (tmp_path / "output").mkdir()
         assert train_command.callback is not None
-        train_command.callback("_test", None, str(tmp_path / "data"), str(tmp_path / "output"), True, "python", Indices.every_iters(9), Indices.every_iters(5), Indices([-1]), logger=vis)
+        train_command.callback("_test", None, str(tmp_path / "data"), str(tmp_path / "output"), "python", Indices.every_iters(9), Indices.every_iters(5), Indices([-1]), logger=vis)
 
         # Test if model was saved at the end
         assert len(_TestMethod._save_paths) > 0
@@ -160,7 +158,7 @@ def test_train_command(mock_extras, tmp_path, wandb_init_run, vis):
         assert _TestMethod._last_step == 12
         assert _TestMethod._setup_train_dataset is not None
         assert (tmp_path / "output" / "checkpoint-13").exists()
-        assert _TestMethod._render_call_step == [4, 4, 9, 9, 12]
+        assert _TestMethod._render_call_step == [4, 4, 9, 9, 12, 12]
 
         wandb_init_mock: mock.Mock = cast(mock.Mock, wandb.init)
         wandb_mock: mock.Mock = cast(mock.Mock, wandb.run)
@@ -206,6 +204,7 @@ def test_train_command(mock_extras, tmp_path, wandb_init_run, vis):
         assert (tmp_path / "output" / "predictions-13.tar.gz").exists()
         assert (tmp_path / "output" / "results-13.json").exists()
     finally:
+        os.chdir(cwd)
         _TestMethod._reset()
         if _ns_prefix_backup is not None:
             os.environ["NS_PREFIX"] = _ns_prefix_backup
@@ -219,14 +218,17 @@ def test_train_command_extras(tmp_path):
     metrics._LPIPS_CACHE.clear()
     metrics._LPIPS_GPU_AVAILABLE = None
     sys.modules.pop("nerfbaselines._metrics_lpips", None)
-    from nerfbaselines.training import train_command
-    from nerfbaselines.registry import methods_registry as registry, MethodSpec
+    from nerfbaselines.cli._train import train_command
+    from nerfbaselines import MethodSpec
+    from nerfbaselines._registry import methods_registry as registry
 
     assert train_command.callback is not None
 
+    cwd = os.getcwd()
     try:
         spec: MethodSpec = {
-            "method": _TestMethod.__module__ + ":_TestMethod",
+            "id": "_test",
+            "method_class": _TestMethod.__module__ + ":_TestMethod",
             "conda": {
                 "environment_name": "_test",
                 "python_version": "3.10",
@@ -235,10 +237,10 @@ def test_train_command_extras(tmp_path):
         }
         registry["_test"] = spec
 
-        # train_command.callback(method, checkpoint, data, output, no_wandb, verbose, backend, eval_single_iters, eval_all_iters)
-        make_dataset(tmp_path / "data")
+        # train_command.callback(method, checkpoint, data, output, no_wandb, backend, eval_single_iters, eval_all_iters)
+        make_dataset(tmp_path / "data", num_images=10)
         (tmp_path / "output").mkdir()
-        train_command.callback("_test", None, str(tmp_path / "data"), str(tmp_path / "output"), True, "python", Indices.every_iters(9), Indices.every_iters(5), Indices([-1]), logger="tensorboard")
+        train_command.callback("_test", None, str(tmp_path / "data"), str(tmp_path / "output"), "python", Indices.every_iters(9), Indices.every_iters(5), Indices([-1]), logger="tensorboard")
 
         # By default, the model should render all images at the end
         print(os.listdir(tmp_path / "output"))
@@ -256,7 +258,7 @@ def test_train_command_extras(tmp_path):
         shutil.rmtree(tmp_path / "output")
         (tmp_path / "output").mkdir()
         train_command.callback(
-            "_test", None, str(tmp_path / "data"), str(tmp_path / "output"), True, "python", Indices.every_iters(9), Indices.every_iters(5), Indices([-1]), generate_output_artifact=False, logger="tensorboard"
+            "_test", None, str(tmp_path / "data"), str(tmp_path / "output"), "python", Indices.every_iters(9), Indices.every_iters(5), Indices([-1]), generate_output_artifact=False, logger="tensorboard"
         )
         print(os.listdir(tmp_path / "output"))
         assert (tmp_path / "output" / "checkpoint-13").exists()
@@ -273,7 +275,7 @@ def test_train_command_extras(tmp_path):
         _TestMethod._reset()
         shutil.rmtree(tmp_path / "output")
         (tmp_path / "output").mkdir()
-        train_command.callback("_test", None, str(tmp_path / "data"), str(tmp_path / "output"), True, "python", Indices.every_iters(9), Indices.every_iters(5), Indices([-1]), generate_output_artifact=True, logger="tensorboard")
+        train_command.callback("_test", None, str(tmp_path / "data"), str(tmp_path / "output"), "python", Indices.every_iters(9), Indices.every_iters(5), Indices([-1]), generate_output_artifact=True, logger="tensorboard")
         assert (tmp_path / "output" / "checkpoint-13").exists()
         assert (tmp_path / "output" / "predictions-13.tar.gz").exists()
         assert (tmp_path / "output" / "results-13.json").exists()
@@ -281,16 +283,19 @@ def test_train_command_extras(tmp_path):
         assert (tmp_path / "output" / "output.zip").exists(), "output artifact should not be generated without extra metrics"
 
     finally:
+        os.chdir(cwd)
         _TestMethod._reset()
         registry.pop("_test", None)
 
 
 def test_train_command_undistort(tmp_path, wandb_init_run, mock_extras):
+    del mock_extras, wandb_init_run
     metrics._LPIPS_CACHE.clear()
     metrics._LPIPS_GPU_AVAILABLE = None
     sys.modules.pop("nerfbaselines._metrics_lpips", None)
-    from nerfbaselines.training import train_command
-    from nerfbaselines.registry import methods_registry as registry, MethodSpec
+    from nerfbaselines.cli._train import train_command
+    from nerfbaselines import MethodSpec
+    from nerfbaselines._registry import methods_registry as registry
 
     assert train_command.callback is not None
     render_was_called = False
@@ -305,22 +310,24 @@ def test_train_command_undistort(tmp_path, wandb_init_run, mock_extras):
         def __init__(self, *args, train_dataset, **kwargs):
             nonlocal setup_data_was_called
             setup_data_was_called = True
-            assert all(train_dataset["cameras"].camera_types == 0)
+            assert all(train_dataset["cameras"].camera_models == 0)
             super().__init__(*args, train_dataset=train_dataset, **kwargs)
 
-        def render(self, cameras, *args, **kwargs):
+        def render(self, camera, *args, **kwargs):
             nonlocal render_was_called
             render_was_called = True
-            assert all(cameras.camera_types == 0)
-            return super().render(cameras, *args, **kwargs)
+            assert camera.camera_models == 0, "Camera should be undistorted"
+            return super().render(camera, *args, **kwargs)
 
     test_train_command_undistort._TestMethod = _Method  # type: ignore
 
     _ns_prefix_backup = os.environ.get("NS_PREFIX", None)
+    cwd = os.getcwd()
     try:
         os.environ["NS_PREFIX"] = str(tmp_path / "prefix")
         spec: MethodSpec = {
-            "method": _TestMethod.__module__ + ":test_train_command_undistort._TestMethod",
+            "id": "_test",
+            "method_class": _TestMethod.__module__ + ":test_train_command_undistort._TestMethod",
             "conda": {
                 "environment_name": "_test",
                 "python_version": "3.10",
@@ -329,12 +336,13 @@ def test_train_command_undistort(tmp_path, wandb_init_run, mock_extras):
         }
         registry["_test"] = spec
 
-        # train_command.callback(method, checkpoint, data, output, no_wandb, verbose, backend, eval_single_iters, eval_all_iters)
-        make_dataset(tmp_path / "data")
+        # train_command.callback(method, checkpoint, data, output, no_wandb, backend, eval_single_iters, eval_all_iters)
+        make_dataset(tmp_path / "data", num_images=10)
         (tmp_path / "output").mkdir()
-        train_command.callback("_test", None, str(tmp_path / "data"), str(tmp_path / "output"), True, "python", Indices.every_iters(9), Indices([1]), Indices([]), logger="none")
+        train_command.callback("_test", None, str(tmp_path / "data"), str(tmp_path / "output"), "python", Indices.every_iters(9), Indices([1]), Indices([]), logger="none")
         assert render_was_called
     finally:
+        os.chdir(cwd)
         _TestMethod._reset()
         if _ns_prefix_backup is not None:
             os.environ["NS_PREFIX"] = _ns_prefix_backup
@@ -348,64 +356,40 @@ def test_render_command(tmp_path, output_type):
     metrics._LPIPS_CACHE.clear()
     metrics._LPIPS_GPU_AVAILABLE = None
     sys.modules.pop("nerfbaselines._metrics_lpips", None)
-    from nerfbaselines.training import train_command
-    from nerfbaselines.registry import methods_registry as registry, MethodSpec
-
-    assert train_command.callback is not None
-    render_was_called = False
-    setup_data_was_called = False
-
-    class _Method(_TestMethod):
-        def get_info(self) -> ModelInfo:
-            info: ModelInfo = {**super().get_info()}
-            info["supported_camera_models"] = frozenset(("pinhole",))
-            return info
-
-        def __init__(self, *args, train_dataset, **kwargs):
-            nonlocal setup_data_was_called
-            setup_data_was_called = True
-            assert all(train_dataset["cameras"].camera_types == 0)
-            super().__init__(*args, train_dataset=train_dataset, **kwargs)
-
-        def render(self, cameras, *args, **kwargs):
-            nonlocal render_was_called
-            render_was_called = True
-            assert all(cameras.camera_types == 0)
-            return super().render(cameras, *args, **kwargs)
-
-    
-    from nerfbaselines.training import train_command
-    from nerfbaselines.cli import render_command
-    from nerfbaselines.registry import methods_registry as registry, MethodSpec
+    from nerfbaselines.cli._train import train_command
+    from nerfbaselines.cli._render import render_command
+    from nerfbaselines import MethodSpec
+    from nerfbaselines._registry import methods_registry as registry
 
     _ns_prefix_backup = os.environ.get("NS_PREFIX", None)
+    cwd = os.getcwd()
     try:
         os.environ["NS_PREFIX"] = str(tmp_path / "prefix")
         spec: MethodSpec = {
-            "method": _TestMethod.__module__ + ":_TestMethod",
+            "method_class": _TestMethod.__module__ + ":_TestMethod",
             "conda": {
                 "environment_name": "_test",
                 "python_version": "3.10",
                 "install_script": "",
-            }
+            },
+            "id": "_test",
         }
         registry["_test"] = spec
 
-        make_dataset(tmp_path / "data")
+        make_dataset(tmp_path / "data", num_images=10)
         (tmp_path / "output").mkdir()
         # Generate checkpoint
         assert train_command.callback is not None
-        train_command.callback("_test", None, str(tmp_path / "data"), str(tmp_path / "output"), True, 
+        train_command.callback("_test", None, str(tmp_path / "data"), str(tmp_path / "output"),
                                "python", Indices([]), Indices([]), Indices([]), logger="none")
 
-        # render_command(checkpoint, data, output, split, verbose, backend)
+        # render_command(checkpoint, data, output, split, backend)
         if output_type == "folder":
             output = tmp_path / "output2"
-            (tmp_path / "output2").mkdir()
         else:
             output = tmp_path / "output2.tar.gz"
         assert render_command.callback is not None
-        render_command.callback(str(tmp_path / "output" / "checkpoint-13"), str(tmp_path / "data"), str(output), "train", True, "python")
+        render_command.callback(str(tmp_path / "output" / "checkpoint-13"), str(tmp_path / "data"), str(output), "train", "python")
 
         assert output.exists()
         if output_type == "folder":
@@ -425,6 +409,7 @@ def test_render_command(tmp_path, output_type):
                 assert tar.getmember("gt-color/2.png").size > 0
 
     finally:
+        os.chdir(cwd)
         _TestMethod._reset()
         if _ns_prefix_backup is not None:
             os.environ["NS_PREFIX"] = _ns_prefix_backup

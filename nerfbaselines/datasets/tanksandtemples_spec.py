@@ -1,9 +1,8 @@
-from ..registry import register
+from nerfbaselines import register
 
 
-register(name="tanksandtemples", spec={
-    "load_dataset_function": ".tanksandtemples:load_tanksandtemples_dataset",
-    "priority": 140,
+register({
+    "id": "tanksandtemples",
     "download_dataset_function": ".tanksandtemples:download_tanksandtemples_dataset",
     "metadata": {
         "id": "tanksandtemples",

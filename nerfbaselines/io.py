@@ -3,12 +3,13 @@ import struct
 import base64
 import hashlib
 import json
+from contextlib import ExitStack
 from datetime import datetime
 import numpy as np
 import time
 import tarfile
 import os
-from typing import Union, Iterator, IO, Any, Dict, List, Iterable, Optional
+from typing import Union, Iterator, IO, Any, Dict, List, Iterable, Optional, TypeVar
 import zipfile
 import contextlib
 from pathlib import Path
@@ -18,24 +19,31 @@ import logging
 import shutil
 from tqdm import tqdm
 import requests
-from .types import (
+from . import (
     Trajectory, 
     Method,
     Dataset,
     RenderOutput,
-    Literal,
 )
 from .utils import (
-    assert_not_none, 
-    save_image,
-    save_depth,
+    convert_image_dtype,
     visualize_depth,
     image_to_srgb,
 )
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
 from . import __version__
 
 
 OpenMode = Literal["r", "w"]
+T = TypeVar("T")
+
+
+def _assert_not_none(value: Optional[T]) -> T:
+    assert value is not None
+    return value
 
 
 def wget(url: str, output: Union[str, Path]):
@@ -67,19 +75,19 @@ def open_any(
         return
 
     path = str(path)
-    components = path.split("/")
+    components = path.split(os.path.sep)
     zip_parts = [i for i, c in enumerate(components[:-1]) if c.endswith(".zip")]
     if zip_parts:
-        with open_any("/".join(components[: zip_parts[-1] + 1]), mode=mode) as f:
+        with open_any(os.path.sep.join(components[: zip_parts[-1] + 1]), mode=mode) as f:
             if components[zip_parts[-1]].endswith(".tar.gz"):
                 # Extract from tar.gz
                 rest = "/".join(components[zip_parts[-1] + 1 :])
                 with tarfile.open(fileobj=f, mode=mode + ":gz") as tar:
                     if mode == "r":
-                        with assert_not_none(tar.extractfile(rest)) as f:
+                        with _assert_not_none(tar.extractfile(rest)) as f:
                             yield f
                     elif mode == "w":
-                        _, extension = os.path.split(rest)
+                        _, extension = os.path.split(rest.replace("/", os.path.sep))
                         with tempfile.TemporaryFile("wb", suffix=extension) as tmp:
                             yield tmp
                             tmp.flush()
@@ -112,7 +120,7 @@ def open_any(
             total=total_size_in_bytes, unit="iB", unit_scale=True, desc="Downloading"
         )
         name = path.split("/")[-1]
-        with tempfile.TemporaryFile("rb+", suffix=name) as file:
+        with tempfile.TemporaryFile("w+b", suffix=name) as file:
             for data in response.iter_content(block_size):
                 progress_bar.update(len(data))
                 file.write(data)
@@ -123,6 +131,7 @@ def open_any(
                 logging.warning(
                     f"While downloading {path}, {progress_bar.n} bytes downloaded out of {total_size_in_bytes} bytes."
                 )
+            file = getattr(file, "file", file)  # Fix typeguard on windows
             yield file
         return
 
@@ -139,7 +148,7 @@ def open_any_directory(path: Union[str, Path], mode: OpenMode = "r") -> Iterator
     if "://" not in path:
         path = os.path.abspath(path)
 
-    components = path.split("/")
+    components = path.split(os.path.sep)
     compressed_parts = [
         i
         for i, c in enumerate(components)
@@ -147,7 +156,7 @@ def open_any_directory(path: Union[str, Path], mode: OpenMode = "r") -> Iterator
     ]
     if compressed_parts:
         with open_any(
-            "/".join(components[: compressed_parts[-1] + 1]), mode=mode
+            os.path.sep.join(components[: compressed_parts[-1] + 1]), mode=mode
         ) as f, tempfile.TemporaryDirectory() as tmpdir:
             rest = "/".join(components[compressed_parts[-1] + 1 :])
             if components[compressed_parts[-1]].endswith(".tar.gz"):
@@ -162,11 +171,11 @@ def open_any_directory(path: Union[str, Path], mode: OpenMode = "r") -> Iterator
                                 )
                             else:
                                 tar.extract(member, tmpdir)
-                        yield os.path.join(tmpdir, rest)
+                        yield os.path.join(tmpdir, rest.replace("/", os.path.sep))
                     elif mode == "w":
-                        tmp_path = Path(tmpdir) / rest
+                        tmp_path = Path(tmpdir) / rest.replace("/", os.path.sep)
                         tmp_path.mkdir(parents=True, exist_ok=True)
-                        yield os.path.join(tmpdir, rest)
+                        yield str(tmp_path)
 
                         for root, dirs, files in os.walk(tmp_path):
                             for dir in dirs:
@@ -204,11 +213,11 @@ def open_any_directory(path: Union[str, Path], mode: OpenMode = "r") -> Iterator
                                 mtime = time.mktime(date_time.timetuple())
                                 os.utime(extracted_path, (mtime, mtime))
 
-                        yield os.path.join(tmpdir, rest)
+                        yield os.path.join(tmpdir, rest.replace("/", os.path.sep))
                     elif mode == "w":
-                        tmp_path = Path(tmpdir) / rest
+                        tmp_path = Path(tmpdir) / rest.replace("/", os.path.sep)
                         tmp_path.mkdir(parents=True, exist_ok=True)
-                        yield os.path.join(tmpdir, rest)
+                        yield str(tmp_path)
 
                         for root, dirs, files in os.walk(tmp_path):
                             for dir in dirs:
@@ -301,7 +310,8 @@ def new_nb_info(train_dataset_metadata,
                 config_overrides, 
                 evaluation_protocol=None,
                 resources_utilization_info=None,
-                total_train_time=None):
+                total_train_time=None,
+                applied_presets=None):
     dataset_metadata = train_dataset_metadata.copy()
     model_info = method.get_info()
 
@@ -311,7 +321,7 @@ def new_nb_info(train_dataset_metadata,
     if not isinstance(evaluation_protocol, str):
         evaluation_protocol = evaluation_protocol.get_name()
     return {
-        "method": model_info["name"],
+        "method": model_info["method_id"],
         "nb_version": __version__,
         "num_iterations": model_info["num_iterations"],
         "total_train_time": round(total_train_time, 5) if total_train_time is not None else None,
@@ -319,6 +329,7 @@ def new_nb_info(train_dataset_metadata,
         # Date time in ISO 8601 format
         "datetime": datetime.utcnow().isoformat(timespec="seconds"),
         "config_overrides": config_overrides,
+        "applied_presets": tuple(sorted(applied_presets)) if applied_presets is not None else None,
         "dataset_metadata": dataset_metadata,
         "evaluation_protocol": evaluation_protocol,
 
@@ -424,7 +435,7 @@ def get_predictions_sha(predictions: str, description: str = "hashing prediction
 
 
 def _encode_values(values: List[float]) -> str:
-    return base64.b64encode(b"".join(struct.pack("f", v) for v in values)).decode("ascii")
+    return base64.b64encode(b"".join(struct.pack("<f", v) for v in values)).decode("ascii")
 
 
 def numpy_to_base64(array: np.ndarray) -> str:
@@ -538,15 +549,60 @@ def save_evaluation_results(file,
         return out
 
 
-def save_predictions(output: str, predictions: Iterable[RenderOutput], dataset: Dataset, *, nb_info=None) -> Iterable[RenderOutput]:
+def _save_predictions_iterate(output: str, predictions: Iterable[RenderOutput], dataset: Dataset, *, nb_info=None):
     background_color =  dataset["metadata"].get("background_color", None)
     assert background_color is None or background_color.dtype == np.uint8, "background_color must be None or uint8"
-    color_space = dataset["metadata"]["color_space"]
+    color_space = dataset["metadata"].get("color_space", "srgb")
     expected_scene_scale = dataset["metadata"].get("expected_scene_scale")
     allow_transparency = True
 
-    def _predict_all(open_fn) -> Iterable[RenderOutput]:
-        for i, (pred, (w, h)) in enumerate(zip(predictions, assert_not_none(dataset["cameras"].image_sizes))):
+    with ExitStack() as stack:
+        if str(output).endswith(".tar.gz"):
+            tar = stack.enter_context(tarfile.open(output, "w:gz"))
+
+            @contextlib.contextmanager
+            def open_fn_tar(path):
+                rel_path = path
+                path = os.path.join(output, path)
+                tarinfo = tarfile.TarInfo(name=rel_path)
+                tarinfo.mtime = int(time.time())
+                with io.BytesIO() as f:
+                    f.name = path
+                    yield f
+                    tarinfo.size = f.tell()
+                    f.seek(0)
+                    tar.addfile(tarinfo=tarinfo, fileobj=f)
+            open_fn = open_fn_tar
+        else:
+            def open_fn_fs(path):
+                path = os.path.join(output, path)
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                return open(path, "wb")
+
+            open_fn = open_fn_fs
+
+        # Write metadata
+        from pprint import pprint
+        pprint(nb_info)
+        with open_fn("info.json") as fp:
+            _background_color = background_color
+            if isinstance(_background_color, np.ndarray):
+                _background_color = _background_color.tolist()
+            fp.write(
+                json.dumps(
+                    serialize_nb_info(
+                        {
+                            **(nb_info or {}),
+                            "render_version": __version__,
+                            "render_datetime": datetime.utcnow().isoformat(timespec="seconds"),
+                            "render_dataset_metadata": dataset["metadata"],
+                        }),
+                    indent=2,
+                ).encode("utf-8")
+            )
+
+
+        for i, (pred, (w, h)) in enumerate(zip(predictions, _assert_not_none(dataset["cameras"].image_sizes))):
             gt_image = image_to_srgb(dataset["images"][i][:h, :w], np.uint8, color_space=color_space, allow_alpha=allow_transparency, background_color=background_color)
             pred_image = image_to_srgb(pred["color"], np.uint8, color_space=color_space, allow_alpha=allow_transparency, background_color=background_color)
             assert gt_image.shape[:-1] == pred_image.shape[:-1], f"gt size {gt_image.shape[:-1]} != pred size {pred_image.shape[:-1]}"
@@ -578,53 +634,10 @@ def save_predictions(output: str, predictions: Iterable[RenderOutput], dataset: 
                     save_image(f, pred["color"])
             yield pred
 
-    def write_metadata(open_fn):
-        from pprint import pprint
-        pprint(nb_info)
-        with open_fn("info.json") as fp:
-            background_color = dataset["metadata"].get("background_color", None)
-            if isinstance(background_color, np.ndarray):
-                background_color = background_color.tolist()
-            fp.write(
-                json.dumps(
-                    serialize_nb_info(
-                        {
-                            **(nb_info or {}),
-                            "render_version": __version__,
-                            "render_datetime": datetime.utcnow().isoformat(timespec="seconds"),
-                            "render_dataset_metadata": dataset["metadata"],
-                        }),
-                    indent=2,
-                ).encode("utf-8")
-            )
 
-    if str(output).endswith(".tar.gz"):
-        with tarfile.open(output, "w:gz") as tar:
-
-            @contextlib.contextmanager
-            def open_fn_tar(path):
-                rel_path = path
-                path = os.path.join(output, path)
-                tarinfo = tarfile.TarInfo(name=rel_path)
-                tarinfo.mtime = int(time.time())
-                with io.BytesIO() as f:
-                    f.name = path
-                    yield f
-                    tarinfo.size = f.tell()
-                    f.seek(0)
-                    tar.addfile(tarinfo=tarinfo, fileobj=f)
-
-            write_metadata(open_fn_tar)
-            yield from _predict_all(open_fn_tar)
-    else:
-
-        def open_fn_fs(path):
-            path = os.path.join(output, path)
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-            return open(path, "wb")
-
-        write_metadata(open_fn_fs)
-        yield from _predict_all(open_fn_fs)
+def save_predictions(output: str, predictions: Iterable[RenderOutput], dataset: Dataset, *, nb_info=None):
+    for _ in _save_predictions_iterate(output, predictions, dataset, nb_info=nb_info):
+        pass
 
 
 def save_output_artifact(model_path: Union[str, Path], predictions_path: Union[str, Path], metrics_path: Union[str, Path], tensorboard_path: Union[str, Path], output_path: Union[str, Path], validate: bool = True):
@@ -741,7 +754,7 @@ def get_torch_checkpoint_sha(checkpoint_data):
             for v in d:
                 update(v)
         elif isinstance(d, (int, float)):
-            sha.update(struct.pack("f", d))
+            sha.update(struct.pack("<f", d))
         elif isinstance(d, str):
             sha.update(d.encode("utf8"))
         elif d is None:
@@ -750,3 +763,48 @@ def get_torch_checkpoint_sha(checkpoint_data):
             raise ValueError(f"Unsupported type {type(d)}")
     update(checkpoint_data)
     return sha.hexdigest()
+
+
+def save_image(file: Union[BinaryIO, str, Path], tensor: np.ndarray):
+    if isinstance(file, (str, Path)):
+        with open(file, "wb") as f:
+            return save_image(f, tensor)
+    path = Path(file.name)
+    if str(path).endswith(".bin"):
+        if tensor.shape[2] < 4:
+            tensor = np.dstack((tensor, np.ones([tensor.shape[0], tensor.shape[1], 4 - tensor.shape[2]])))
+        file.write(struct.pack("<ii", tensor.shape[0], tensor.shape[1]))
+        file.write(tensor.astype(np.float16).tobytes())
+    else:
+        from PIL import Image
+
+        tensor = convert_image_dtype(tensor, np.uint8)
+        image = Image.fromarray(tensor)
+        image.save(file, format="png")
+
+
+def read_image(file: Union[BinaryIO, str, Path]) -> np.ndarray:
+    if isinstance(file, (str, Path)):
+        with open(file, "rb") as f:
+            return read_image(f)
+    path = Path(file.name)
+    if str(path).endswith(".bin"):
+        h, w = struct.unpack("<II", file.read(8))
+        itemsize = 2
+        img = np.frombuffer(file.read(h * w * 4 * itemsize), dtype=np.float16, count=h * w * 4, offset=8).reshape([h, w, 4])
+        assert img.itemsize == itemsize
+        return img.astype(np.float32)
+    else:
+        from PIL import Image
+
+        return np.array(Image.open(file))
+
+
+def save_depth(file: Union[BinaryIO, str, Path], tensor: np.ndarray):
+    if isinstance(file, (str, Path)):
+        with open(file, "wb") as f:
+            return save_depth(f, tensor)
+    path = Path(file.name)
+    assert str(path).endswith(".bin")
+    file.write(struct.pack("<ii", tensor.shape[0], tensor.shape[1]))
+    file.write(tensor.astype(np.float16).tobytes())

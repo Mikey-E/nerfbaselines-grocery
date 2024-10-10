@@ -1,9 +1,8 @@
-from ..registry import register
+from nerfbaselines import register
 
 
-register(name="llff", spec={
-    "load_dataset_function": ".llff:load_llff_dataset",
-    "priority": 130,
+register({
+    "id": "llff",
     "download_dataset_function": ".llff:download_llff_dataset",
     "evaluation_protocol": "nerf",
     "metadata": {

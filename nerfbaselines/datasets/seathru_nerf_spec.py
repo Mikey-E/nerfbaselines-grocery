@@ -1,9 +1,8 @@
-from ..registry import register
+from nerfbaselines import register
 
 
-register(name="seathru-nerf", spec={
-    "load_dataset_function": ".seathru_nerf:load_seathru_nerf_dataset",
-    "priority": 161,
+register({
+    "id": "seathru-nerf",
     "download_dataset_function": ".seathru_nerf:download_seathru_nerf_dataset",
     "metadata": {
         "id": "seathru-nerf",

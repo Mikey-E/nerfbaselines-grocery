@@ -11,8 +11,8 @@ from pathlib import Path
 import typing
 from typing import Optional, Union, List, Dict, Sequence, Any, cast
 from typing import TYPE_CHECKING
+from . import Logger, LoggerEvent
 from .utils import convert_image_dtype
-from .types import Logger, LoggerEvent
 
 if TYPE_CHECKING:
     import wandb.sdk.wandb_run
@@ -190,14 +190,14 @@ class WandbLoggerEvent(BaseLoggerEvent):
         xlabel, ylabel = axes_labels or ["x", "y"]
         if len(data) == 1:
             table = wandb.Table(data=[[x, y] for x, y in data[0]], columns=[xlabel, ylabel])
-            self._commit[tag] = wandb.plot.line(
+            self._commit[tag] = wandb.plot.line(  # type: ignore
                 table,
                 x=xlabel,
                 y=ylabel,
                 title=title
             )
         else:
-            self._commit[tag] = wandb.plot.line_series(
+            self._commit[tag] = wandb.plot.line_series(  # type: ignore
                 [x[:, 0] for x in data],
                 [x[:, 1] for x in data],
                 keys=labels,
@@ -689,10 +689,17 @@ def _tensorboard_hparams(hparam_dict=None, metrics_list=None, hparam_domain_disc
 
 
 class TensorboardLogger(BaseLogger):
-    def __init__(self, output: Union[str, Path], hparam_plugin_metrics: Optional[Sequence[str]] = None):
+    def __init__(self, 
+                 output: Union[str, Path], 
+                 hparam_plugin_metrics: Optional[Sequence[str]] = None,
+                 subdirectory: Optional[str] = "tensorboard"):
         from tensorboard.summary.writer.event_file_writer import EventFileWriter
+        output = str(output)
+        if subdirectory is not None:
+            output = os.path.join(output, subdirectory)
 
-        self._writer = EventFileWriter(str(output))
+        self._output = output
+        self._writer = EventFileWriter(output)
         self._hparam_plugin_metrics = hparam_plugin_metrics or []
 
     @contextlib.contextmanager

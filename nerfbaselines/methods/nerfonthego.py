@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import functools
 from itertools import chain
@@ -5,11 +7,11 @@ import gc
 import warnings
 import os
 from pathlib import Path
-from typing import Optional, Sequence, Iterable, Union, Dict, cast
-from nerfbaselines.types import Dataset, Method, MethodInfo, ModelInfo, Cameras, camera_model_to_int, OptimizeEmbeddingsOutput, RenderOutput
+from typing import Optional, Union, Dict, cast
+from nerfbaselines import (
+    Dataset, Method, MethodInfo, ModelInfo, Cameras, camera_model_to_int, RenderOutput,
+)
 from nerfbaselines.utils import convert_image_dtype
-from nerfbaselines.pose_utils import apply_transform
-from nerfbaselines.io import numpy_from_base64
 
 from flax.training import checkpoints  # type: ignore
 import flax  # type: ignore
@@ -22,11 +24,39 @@ import cv2  # type: ignore
 from PIL import Image
 from tqdm import tqdm
 from internal import configs  # type: ignore
-from internal import utils  # type: ignore
 from internal import models  # type: ignore
 from internal import train_utils  # type: ignore
 from internal import camera_utils  # type: ignore
 from internal.datasets import Dataset as GoBaseDataset  # type: ignore
+
+
+def apply_transform(transform, poses):
+    # Get transform and scale
+    assert len(transform.shape) == 2, "Transform should be a 4x4 or a 3x4 matrix."
+    scale = np.linalg.norm(transform[:3, :3], axis=0)
+    assert np.allclose(scale, scale[0], rtol=1e-3, atol=0)
+    scale = float(np.mean(scale).item())
+    transform = transform.copy()
+    transform[:3, :] /= scale
+
+    # Pad poses
+    bottom = np.broadcast_to([0, 0, 0, 1.0], poses[..., :1, :4].shape)
+    poses = np.concatenate([poses[..., :3, :4], bottom], axis=-2)
+
+    # Apply transform
+    poses = transform @ poses
+
+    # Unpad poses
+    poses = poses[..., :3, :4]
+
+    # Scale translation
+    poses[..., :3, 3] *= scale
+    return poses
+
+
+def numpy_from_base64(data: str) -> np.ndarray:
+    with io.BytesIO(base64.b64decode(data)) as f:
+        return np.load(f)
 
 
 def get_features(images, rate=1):
@@ -139,7 +169,7 @@ class GoDataset(GoBaseDataset):
 
         # Validate cameras first
         assert (
-            np.all(dataset["cameras"].camera_types[:1] == dataset["cameras"].camera_types) and
+            np.all(dataset["cameras"].camera_models[:1] == dataset["cameras"].camera_models) and
             np.all(dataset["cameras"].image_sizes[:1] == dataset["cameras"].image_sizes) and
             np.all(dataset["cameras"].distortion_parameters[:1] == dataset["cameras"].distortion_parameters) and
             np.all(dataset["cameras"].intrinsics[:1] == dataset["cameras"].intrinsics)), "All cameras must be the same"
@@ -155,7 +185,7 @@ class GoDataset(GoBaseDataset):
         pixtocam = np.linalg.inv(camera_utils.intrinsic_matrix(fx, fy, cx, cy))
         coeffs = ['k1', 'k2', 'p1', 'p2', 'k3', 'k4']
         distortion_params = None
-        if dataset["cameras"].camera_types[0].item() in (camera_model_to_int("opencv"), camera_model_to_int("opencv_fisheye")):
+        if dataset["cameras"].camera_models[0].item() in (camera_model_to_int("opencv"), camera_model_to_int("opencv_fisheye")):
             distortion_params = dict(zip(coeffs, chain(dataset["cameras"].distortion_parameters[0], [0]*6)))
         camtype = camera_utils.ProjectionType.PERSPECTIVE
 
@@ -223,8 +253,6 @@ class GoDataset(GoBaseDataset):
 
 
 class NeRFOnthego(Method):
-    _method_name: str = "nerfonthego"
-
     def __init__(self, *,
                  checkpoint=None, 
                  train_dataset: Optional[Dataset] = None,
@@ -292,10 +320,8 @@ class NeRFOnthego(Method):
         return config
 
     @classmethod
-    def get_method_info(cls) -> MethodInfo:
-        assert cls._method_name is not None, "Method was not properly registered"
+    def get_method_info(cls):
         return MethodInfo(
-            name=cls._method_name,
             required_features=frozenset(("color",)),
             supported_camera_models=frozenset(("pinhole", "opencv", "opencv_fisheye")),
             supported_outputs=("color", "depth", "accumulation"),
@@ -427,10 +453,10 @@ class NeRFOnthego(Method):
             with (Path(path) / "config.gin").open("w+") as f:
                 f.write(self._config_str)
 
-    def render(self, cameras: Cameras, *, embeddings=None, options=None) -> Iterable[RenderOutput]:
+    def render(self, camera: Cameras, *, options=None) -> RenderOutput:
         del options
-        if embeddings is not None:
-            raise NotImplementedError(f"Optimizing embeddings is not supported for method {self.get_method_info()['name']}")
+        camera = camera.item()
+        cameras = camera[None]
         # Test-set evaluation.
         # We reuse the same random number generator from the optimization step
         # here on purpose so that the visualization matches what happened in
@@ -451,42 +477,17 @@ class NeRFOnthego(Method):
             dataparser_transform=self._dataparser_transform,
         )
 
-        for i, test_case in enumerate(test_dataset):
-            rendering = models.render_image(functools.partial(self.render_eval_pfn, eval_variables, self.train_frac), test_case.rays, None, self.config, verbose=False)
+        test_case = next(iter(test_dataset))
+        rendering = models.render_image(functools.partial(self.render_eval_pfn, eval_variables, self.train_frac), test_case.rays, None, self.config, verbose=False)
 
-            accumulation = rendering["acc"]
-            color = rendering["rgb"]
-            depth = np.array(rendering["distance_mean"], dtype=np.float32)
-            assert len(accumulation.shape) == 2
-            assert len(depth.shape) == 2
-            yield cast(RenderOutput, {
-                "color": np.array(color, dtype=np.float32),
-                "depth": np.array(depth, dtype=np.float32),
-                "accumulation": np.array(accumulation, dtype=np.float32),
-            })
-
-    def optimize_embeddings(
-        self, 
-        dataset: Dataset,
-        embeddings: Optional[Sequence[np.ndarray]] = None
-    ) -> Iterable[OptimizeEmbeddingsOutput]:
-        """
-        Optimize embeddings for each image in the dataset.
-
-        Args:
-            dataset: Dataset.
-            embeddings: Optional initial embeddings.
-        """
-        del dataset, embeddings
-        raise NotImplementedError()
-
-    def get_train_embedding(self, index: int) -> Optional[np.ndarray]:
-        """
-        Get the embedding for a training image.
-
-        Args:
-            index: Index of the image.
-        """
-        del index
-        return None
+        accumulation = rendering["acc"]
+        color = rendering["rgb"]
+        depth = np.array(rendering["distance_mean"], dtype=np.float32)
+        assert len(accumulation.shape) == 2
+        assert len(depth.shape) == 2
+        return cast(RenderOutput, {
+            "color": np.array(color, dtype=np.float32),
+            "depth": np.array(depth, dtype=np.float32),
+            "accumulation": np.array(accumulation, dtype=np.float32),
+        })
 
