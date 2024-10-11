@@ -4,7 +4,7 @@
 import os
 import sys
 import argparse
-from allowed_models import allowed_models
+from utils.allowed_models import allowed_models
 
 #Model to benchmark
 model = sys.argv[1]
