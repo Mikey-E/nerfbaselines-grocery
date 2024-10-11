@@ -1,8 +1,7 @@
 #Author: Michael Elgin
-#Remember that every scene folder within converted should have its "images" renamed to "input",
-#there is a utils/ python script for this.
-#This script is to do a parallel re-copy of the grocery data, mostly by subcategory since
-#doing it by category takes 1.3 hours
+#This script is to do a parallel re-copy of the grocery data
+#Don't forget to create the softlinks in a grouped structure. This file is only for creating jobs for parallel copy
+#   There is probably a script in utils/ to do this
 
 import argparse
 import os
@@ -11,33 +10,38 @@ parser = argparse.ArgumentParser(description="Create jobs to copy the grocery da
 parser.add_argument(
         "--data_src_path",
         type=str,
-        default="/project/3dllms/DATASETS/GROUPED",
-        help="Path to the source directory containing top level categories e.g. Fruits, Packages, etc"
+        default="/project/3dllms/DATASETS/PROCESSED/",
+        help="Path to the source directory containing all the scene folders at the same level"
     )
 parser.add_argument(
         "--data_dest_path",
         type=str,
-        default="/project/3dllms/DATASETS/CONVERTED",
-        help="Path to the destination directories to contain top level categories e.g. Fruits, Packages, etc"
+        default="/project/3dllms/DATASETS/CONVERTED/NORMAL_COPY/UNGROUPED/",
+        help="Path to the destination directory to contain all the scene folders at the same level"
     )
 parser.add_argument(
-        "--nerfbaselines_path",
+        "--logs_dir_path",
         type=str,
-        default="/cluster/medbow/project/3dllms/melgin/nerfbaselines-grocery",
-        help="Path to the directory containing top level nerfbaselines code"
-    )
+        default=os.getenv("GROCERY_LOGS_DIR"),
+        help="Path to put log files",
+)
 args = parser.parse_args()
 
-#Create the category folders
-for category in os.listdir(args.data_src_path):
-    os.system("mkdir " + args.data_dest_path + "/" + category)
+#Arg checks
+NERFBASELINES_HOME_DIR = os.getenv("NERFBASELINES_HOME_DIR").rstrip("/") + "/" #end in exactly 1 /
+assert NERFBASELINES_HOME_DIR != None, "must set env var NERFBASELINES_HOME_DIR to where nerfbaselines code is"
+assert os.path.exists(args.data_src_path), f"data source path {args.data_src_path} does must exist"
+assert args.logs_dir_path != None, "must set env var GROCERY_LOGS_DIR so the logs can be placed there"
 
-#Copy in parallel by subcategory
-for category in os.listdir(args.data_src_path):
-    for subcategory in os.listdir(args.data_src_path + "/" + category):
-        command = "sbatch "\
-                    + "-J " + subcategory + " "\
-                    + args.nerfbaselines_path + "/slurm_scripts/copy.sh "\
-                    + category + "/" + subcategory
-        print(command)
-        os.system(command)
+#Ensure destination is ready
+os.makedirs(args.data_dest_path, exist_ok=True)
+
+#Copy in parallel
+for scene_folder in os.listdir(args.data_src_path):
+    #Command should match the args expected by the slurm script
+    command = (
+        f"sbatch -J copy_{scene_folder} {NERFBASELINES_HOME_DIR}slurm_scripts/copy.sh "
+        f"{args.data_src_path} {args.data_dest_path} {args.logs_dir_path} {scene_folder}"
+    )
+    print(command)
+    os.system(command)
