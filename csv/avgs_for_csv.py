@@ -15,7 +15,7 @@ data_for_csv = []
 data_folders_path = "/project/3dllms/DATASETS/GROUPED/"
 project_path = "/cluster/medbow/project/3dllms/melgin/nerfbaselines-grocery/"
 results_path = project_path + "results/"
-output_path = project_path + "csv/"
+output_path = project_path + "csv/csv_results/"
 
 #Prefixes for results folder
 #Condiser registry.get_supported_methods() for the method names
@@ -25,6 +25,7 @@ prefixes = {
     "gaussian-opacity-fields" : "gaussian-opacity-fields",
     "gaussian-splatting" : "gaussian-splatting",
     "mip-splatting" : "mip-splatting",
+    "zipnerf" : "zipnerf",
 }
 
 for category in os.listdir(data_folders_path):
