@@ -7,6 +7,8 @@
 #SBATCH --nodes=1
 #SBATCH --partition=non-investor
 #SBATCH --mem=16G
+
+#Slurm may be fussy if the generic resource(s) is not explicit
 #SBATCH --gres=none
 
 #Example run: sbatch -J jobname copy.sh arg1 arg2...
