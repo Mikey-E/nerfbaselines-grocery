@@ -17,7 +17,7 @@ parser.add_argument(
 parser.add_argument(
         "--data_dest_dir_path",
         type=str,
-        default="/project/3dllms/DATASETS/CONVERTED/NORMAL_COPY/UNGROUPED/",
+        default="/project/3dllms/DATASETS/CONVERTED/NORMAL/UNGROUPED/",
         help="Path to the destination directory to contain all the scene folders at the same level"
     )
 parser.add_argument(
@@ -26,6 +26,7 @@ parser.add_argument(
         default=os.getenv("GROCERY_LOGS_DIR"),
         help="Path to put log files",
 )
+parser.add_argument('-y', '--yes', action='store_true', help='Automatically confirm and bypass settings confirmation')
 args = parser.parse_args()
 
 #Arg checks
@@ -48,6 +49,17 @@ args.logs_dir_path = args.logs_dir_path.rstrip("/") + "/"
 #No extension of the filename when used as part of this directory to put the logs in
 args.logs_dir_path += os.path.splitext(os.path.basename(__file__))[0] + "_" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
 
+#Confirm settings are as user wants
+print("------- Settings for this run --------")
+print("nerfbaselines path: " + NERFBASELINES_HOME_DIR)
+print("data source path: " + args.data_src_dir_path)
+print("data destination path: " + args.data_dest_dir_path)
+print("logs path: " + args.logs_dir_path)
+print("--------------------------------------")
+if not args.yes:
+    if (input("Continue? y/[n]: ") != 'y'):
+        exit(0)
+
 #Copy in parallel
 for scene_folder in os.listdir(args.data_src_dir_path):
     #Command should match the args expected by the slurm script
@@ -56,4 +68,4 @@ for scene_folder in os.listdir(args.data_src_dir_path):
         f"{args.data_src_dir_path} {args.data_dest_dir_path} {args.logs_dir_path} {scene_folder}"
     )
     print(command)
-#    os.system(command)
+    os.system(command)
