@@ -56,18 +56,10 @@ to point to wherever you will keep the nerfbaselines datasets.
 nerfbaselines train --method instant-ngp --data datasets/mipnerf360/kitchen --output results/ingp_kitchen
 - Set env variable NERFBASELINES_PREFIX to wherever you want new environments to be made.
 
-Environment variables to set (with example values that you may change as needed)
-- export NERFBASELINES_PREFIX=/project/3dllms/melgin/conda/envs/
-- export NERFBASELINES_HOME_DIR_PATH=/project/3dllms/melgin/nerfbaselines-grocery/
-- export GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH=/project/3dllms/DATASETS/CONVERTED/UNGROUPED/
-- export GROCERY_DATA_CONVERTED_GROUPED_DIR_PATH=/project/3dllms/DATASETS/CONVERTED/GROUPED/
-- export GROCERY_DATA_NORMAL_UNGROUPED_DIR_PATH=/project/3dllms/DATASETS/PROCESSED/
-- export GROCERY_DATA_NORMAL_GROUPED_DIR_PATH=/project/3dllms/DATASETS/GROUPED/
-- export GROCERY_RESULTS_DIR_PATH=${NERFBASELINES_HOME_DIR}results/
-- export GROCERY_LOGS_DIR_PATH=${NERFBASELINES_HOME_DIR}logs/
-- export GROCERY_CSVS_DIR_PATH=${NERFBASELINES_HOME_DIR}csv/csv_results/
-
-Add the NERFBASELINES_HOME_DIR_PATH to the PYTHONPATH
+Environment variables to set (with example values that you may change as needed) are stored in env_vars.sh.
+It is critical that you make sure these get activated when the conda environment gets activated, so soft-link to them in
+the conda environments etc/conda/activate.d folder like "ln -s ${NERFBASELINES_HOME_DIR}env_vars.sh env_vars.sh" such
+that you end up with a soft-link looking like "env_vars.sh -> /project/3dllms/melgin/nerfbaselines-grocery/env_vars.sh"
 
 Changes to /cluster/medbow/project/3dllms/melgin/conda/envs/conda-envs/gaussian-opacity-fields/
 492c89517b613ce96a3fbe243d6698317e9f38e0a219ac38d72949ecf48780f7/
