@@ -5,6 +5,7 @@
 
 import argparse
 import os
+from datetime import datetime
 
 parser = argparse.ArgumentParser(description="Create jobs to copy the grocery data to a new location")
 parser.add_argument(
@@ -42,6 +43,10 @@ args.data_dest_dir_path = args.data_dest_dir_path.rstrip("/") + "/"
 assert args.logs_dir_path != None, "must set env var GROCERY_LOGS_DIR so the logs can be placed there"
 os.makedirs(args.logs_dir_path, exist_ok=True)
 args.logs_dir_path = args.logs_dir_path.rstrip("/") + "/"
+
+#Within the log path given, make sure everything in this run goes in <filename>_yyyy_mm_dd_hh_mm_ss/
+#No extension of the filename when used as part of this directory to put the logs in
+args.logs_dir_path += os.path.splitext(os.path.basename(__file__))[0] + "_" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
 
 #Copy in parallel
 for scene_folder in os.listdir(args.data_src_dir_path):
