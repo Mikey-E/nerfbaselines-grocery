@@ -23,16 +23,16 @@ parser.add_argument(
 parser.add_argument(
         "--logs_dir_path",
         type=str,
-        default=os.getenv("GROCERY_LOGS_DIR"),
+        default=os.getenv("GROCERY_LOGS_DIR_PATH"),
         help="Path to put log files",
 )
 parser.add_argument('-y', '--yes', action='store_true', help='Automatically confirm and bypass settings confirmation')
 args = parser.parse_args()
 
 #Arg checks
-NERFBASELINES_HOME_DIR = os.getenv("NERFBASELINES_HOME_DIR")
-assert NERFBASELINES_HOME_DIR != None, "must set env var NERFBASELINES_HOME_DIR to where nerfbaselines code is"
-NERFBASELINES_HOME_DIR = NERFBASELINES_HOME_DIR.rstrip("/") + "/" #end in exactly 1 /
+NERFBASELINES_HOME_DIR_PATH = os.getenv("NERFBASELINES_HOME_DIR_PATH")
+assert NERFBASELINES_HOME_DIR_PATH != None, "must set env var NERFBASELINES_HOME_DIR_PATH to where nerfbaselines code is"
+NERFBASELINES_HOME_DIR_PATH = NERFBASELINES_HOME_DIR_PATH.rstrip("/") + "/" #end in exactly 1 /
 
 assert os.path.exists(args.data_src_dir_path), f"data source path {args.data_src_dir_path} must exist"
 args.data_src_dir_path = args.data_src_dir_path.rstrip("/") + "/"
@@ -41,7 +41,7 @@ assert args.data_dest_dir_path != None, "must set --data_dest_dir_path so copyin
 os.makedirs(args.data_dest_dir_path, exist_ok=True) #Ensure destination is ready
 args.data_dest_dir_path = args.data_dest_dir_path.rstrip("/") + "/"
 
-assert args.logs_dir_path != None, "must set env var GROCERY_LOGS_DIR so the logs can be placed there"
+assert args.logs_dir_path != None, "must set env var GROCERY_LOGS_DIR_PATH so the logs can be placed there"
 os.makedirs(args.logs_dir_path, exist_ok=True)
 args.logs_dir_path = args.logs_dir_path.rstrip("/") + "/"
 
@@ -51,7 +51,7 @@ args.logs_dir_path += os.path.splitext(os.path.basename(__file__))[0] + "_" + da
 
 #Confirm settings are as user wants
 print("------- Settings for this run --------")
-print("nerfbaselines path: " + NERFBASELINES_HOME_DIR)
+print("nerfbaselines path: " + NERFBASELINES_HOME_DIR_PATH)
 print("data source path: " + args.data_src_dir_path)
 print("data destination path: " + args.data_dest_dir_path)
 print("logs path: " + args.logs_dir_path)
@@ -64,7 +64,7 @@ if not args.yes:
 for scene_folder in os.listdir(args.data_src_dir_path):
     #Command should match the args expected by the slurm script
     command = (
-        f"sbatch -J copy_{scene_folder} {NERFBASELINES_HOME_DIR}slurm_scripts/copy.sh "
+        f"sbatch -J copy_{scene_folder} {NERFBASELINES_HOME_DIR_PATH}slurm_scripts/copy.sh "
         f"{args.data_src_dir_path} {args.data_dest_dir_path} {args.logs_dir_path} {scene_folder}"
     )
     print(command)

@@ -56,5 +56,5 @@ ml arcc/1.0
 ml gcc/13.2.0
 ml cuda-toolkit/12.4.1
 
-cd $NERFBASELINES_HOME_DIR
+cd $NERFBASELINES_HOME_DIR_PATH
 srun -o $logs_path$scene_folder.log nerfbaselines train --method zipnerf --data $data_path$scene_folder --output $results_path$scene_folder

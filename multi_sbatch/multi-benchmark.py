@@ -20,19 +20,19 @@ parser.add_argument(
 parser.add_argument(
     "--data_path",
     default =
-        os.getenv("GROCERY_DATA_CONVERTED_DIR")
+        os.getenv("GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH")
         if model in ["gaussian-opacity-fields", "gaussian-splatting", "mip-splatting"] else
-        os.getenv("GROCERY_DATA_NORMAL_DIR"),
+        os.getenv("GROCERY_DATA_NORMAL_UNGROUPED_DIR_PATH"),
     help="Data directory: where the properly formatted scene folders are",
 )
 parser.add_argument(
     "--results_path",
-    default=os.getenv("GROCERY_RESULTS_DIR") + model + "/",
+    default=os.getenv("GROCERY_RESULTS_DIR_PATH") + model + "/",
     help="Results directory: where to put the results folders for each scene",
 )
 parser.add_argument(
     "--logs_path",
-    default=os.getenv("GROCERY_LOGS_DIR") + model + "/",
+    default=os.getenv("GROCERY_LOGS_DIR_PATH") + model + "/",
     help="Logs directory: where to put the log folders for each scene",
 )
 args = parser.parse_args(sys.argv[2:])#Requires model as first argument before options
@@ -72,7 +72,7 @@ for scene_folder in os.listdir(args.data_path):
     #Trailing arguments of the command should match what is expected by the benchmarking script
     command =\
         "sbatch -J " + model + "_" + scene_folder + " "\
-        + os.getenv("NERFBASELINES_HOME_DIR") + "slurm_scripts/benchmark_" + model + ".sh "\
+        + os.getenv("NERFBASELINES_HOME_DIR_PATH") + "slurm_scripts/benchmark_" + model + ".sh "\
         + scene_folder + " " + args.data_path + " " + args.results_path + " " + args.logs_path
     os.system("echo command is: " + command)
     os.system(command)
