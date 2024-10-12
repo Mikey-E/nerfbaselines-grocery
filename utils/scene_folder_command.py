@@ -9,7 +9,7 @@ parser.add_argument(
         "--path",
         type=str,
         default="/project/3dllms/DATASETS/CONVERTED",
-        help="Path to the directory containing top level categories e.g. Fruits, Packages, etc"
+        help="Path to the directory containing scene folders"
     )
 parser.add_argument(
         "--command",
@@ -19,22 +19,10 @@ parser.add_argument(
     )
 args = parser.parse_args()
 
-os.chdir(args.path)
-for category in os.listdir(args.path):
-    if category == "Random":#is effectively a sub-category
-        os.chdir("Random")
-        for scene_folder in os.listdir("."):
-            os.chdir(scene_folder)
-            os.system(args.command)
-            os.chdir("..")
-        os.chdir("..")
-        continue
-    os.chdir(category)
-    for subcategory in os.listdir("."):
-        os.chdir(subcategory)
-        for scene_folder in os.listdir("."):
-            os.chdir(scene_folder)
-            os.system(args.command)
-            os.chdir("..")
-        os.chdir("..")
-    os.chdir("..")
+#Arg checks
+assert os.path.exists(args.path), f"{args.path} does not exist on the file system"
+args.path = args.path.rstrip("/") + "/"
+
+for scene_folder in os.listdir(args.path):
+    os.chdir(args.path + scene_folder)
+    os.system(args.command)
