@@ -8,13 +8,13 @@ parser = argparse.ArgumentParser(description="command to execute within all scen
 parser.add_argument(
         "--path",
         type=str,
-        default="/project/3dllms/DATASETS/CONVERTED",
+        required=True,
         help="Path to the directory containing scene folders"
     )
 parser.add_argument(
         "--command",
         type=str,
-        default="mv images input",
+        required=True,
         help="Command to execute within each scene folder."
     )
 args = parser.parse_args()
