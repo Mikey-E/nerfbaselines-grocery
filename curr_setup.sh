@@ -7,6 +7,11 @@
 #nerfbaselines train --method 2d-gaussian-splatting --data ${CURR_DATA_DIR_PATH}${CURR_SCENE} --output ${GROCERY_RESULTS_DIR_PATH}poc_2dgs_${CURR_SCENE}
 
 #Setup for zipnerf
+#export CURR_SCENE="04_19_2024_W_F_Sugar_P_2/"
+#export CURR_DATA_DIR_PATH=$GROCERY_DATA_NORMAL_UNGROUPED_DIR_PATH
+#nerfbaselines train --method zipnerf --data ${CURR_DATA_DIR_PATH}${CURR_SCENE} --output ${GROCERY_RESULTS_DIR_PATH}poc_zn_${CURR_SCENE}
+
+#Setup for instant-ngp ablation _2
 export CURR_SCENE="04_19_2024_W_F_Sugar_P_2/"
 export CURR_DATA_DIR_PATH=$GROCERY_DATA_NORMAL_UNGROUPED_DIR_PATH
-nerfbaselines train --method zipnerf --data ${CURR_DATA_DIR_PATH}${CURR_SCENE} --output ${GROCERY_RESULTS_DIR_PATH}poc_zn_${CURR_SCENE}
+nerfbaselines train --method instant-ngp --data ${CURR_DATA_DIR_PATH}${CURR_SCENE} --output ${GROCERY_RESULTS_DIR_PATH}poc_ingp2_${CURR_SCENE}
