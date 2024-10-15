@@ -1,4 +1,4 @@
----- BEGIN fork preamble ----
+____ BEGIN fork preamble ____
 
 This is a fork for benchmarking the grocery dataset.
 The original readme text at the time of the fork is after the fork preamble.
@@ -47,6 +47,7 @@ the dataset about to be converted must have its images folder named as "input". 
 and it should be run first if the input image folder is not already named as such.
 Not all the new images may write to the created image folder.
 In our case we (afterward) have renamed input to images so they are all there and are all the original size.
+- xlsx/ contains files modified for viewing in excel, which may deviate from the pure csv format.
 
 Recommended:
 - Create a soft-link called "datasets", at the highest directory level,
@@ -70,21 +71,22 @@ such that you end up with a soft-link looking like:
 env_vars.sh -> /project/3dllms/melgin/nerfbaselines-grocery/env_vars.sh
 ```
 
+### Changes
+
 Changes to /cluster/medbow/project/3dllms/melgin/conda/envs/conda-envs/gaussian-opacity-fields/
 492c89517b613ce96a3fbe243d6698317e9f38e0a219ac38d72949ecf48780f7/
 gaussian-opacity-fields/src/gaussian-opacity-fields/scene/gaussian_model.py:
-	RuntimeError: quantile() input tensor is too large
-		will have changes
+	RuntimeError: quantile() input tensor is too large,
+		will (probably) have changes
 
 Changes to cameras.py
 	singular matrix error:
 		try with the pseudo inverse instead: np.linalg.pinv(matrix)
 
-xlsx/ contains files modified for viewing in excel, which may deviate from the pure csv format.
 
 Had to add a \_version.py file inside nerfbaselines folder, containing __version__="x.y.z" i.e. whatever the current version of nerfbaselines was pip-installed. This file has been gitignored by the original author(s).
 
----- END fork preamble ----
+____ END fork preamble ____
 
 <img width=112 height=112 align="left" src="assets/logo.png" />
 <h1>
