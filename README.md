@@ -32,7 +32,7 @@ Medicine Bow
 | gaussian-splatting      |      ✅     |      ❌       | | | | | |
 | mip-splatting           |      ✅     |      ❌       | | | | | |
 | mipnerf360              |      ❌     |      ❌       | | | | | XLA runtime error |
-| zipnerf                 |      ❌     |      ❌       | | | | | XLA runtime error |
+| zipnerf                 |      ✅     |      ❌       | | | | | |
 | nerf                    |      ?      |      ❌       | | | | | trains but will take 17 hours per run |
 | tetra-nerf              |      ❌     |      ❌       | | | | | uses nerfstudio env which is gone now, no module named torch |
 | kplanes                 |      ✅     |      ❌       | lego | 35.73, 35.64 | 0.981, 0.981 | 0.047, 0.051 | |
