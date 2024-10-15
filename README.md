@@ -71,6 +71,8 @@ Changes to cameras.py
 	singular matrix error:
 		try with the pseudo inverse instead: np.linalg.pinv(matrix)
 
+xlsx/ contains files modified for viewing in excel, which may deviate from the pure csv format.
+
 Had to add a \_version.py file inside nerfbaselines folder, containing __version__="x.y.z" i.e. whatever the current version of nerfbaselines was pip-installed. This file has been gitignored by the original author(s).
 
 ---- END fork preamble ----
