@@ -30,7 +30,7 @@
 #if oom hazard, minimum memory is a good idea
 #above 128GB tends to choke out job scheduling (at least on h100s)
 ##SBATCH --mem=64GB #Total memory (this is a minimum for scheduling on a node)
-##SBATCH --mem=128GB #Total memory (this is a minimum for scheduling on a node)
+#SBATCH --mem=128GB #Total memory (this is a minimum for scheduling on a node)
 ##SBATCH --mem=512GB #Total memory (this is a minimum for scheduling on a node)
 ##SBATCH --mem=32GB #Total memory (this is a minimum for scheduling on a node)
 
@@ -47,9 +47,9 @@ for var in data_path results_path logs_path; do
 done
 
 # Load modules required
-#ml arcc/1.0
-#ml gcc/13.2.0
-#ml cuda-toolkit/12.4.1
+ml arcc/1.0 #Should already be there, but just in case
+ml gcc/13.2.0 #Dependency of cuda-toolkit/12.6.1
+ml cuda-toolkit/12.6.1
 
 cd $NERFBASELINES_HOME_DIR_PATH
 srun -o $logs_path$scene_folder.log nerfbaselines train --method instant-ngp --data $data_path$scene_folder --output $results_path$scene_folder
