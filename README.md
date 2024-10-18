@@ -73,6 +73,33 @@ env_vars.sh -> /project/3dllms/melgin/nerfbaselines-grocery/env_vars.sh
 
 ### Changes
 
+#### nb-info.json
+
+There is a file nb-info.json which describes the loader for the converted datset. Please make sure all
+converted scene folders contain a softlink to it:
+
+```bash
+ln -s ${NERFBASELINES_HOME_DIR}nb-info.json nb-info.json
+```
+
+such that you end up with a soft-link looking like:
+
+```
+nb-info.json -> /project/3dllms/melgin/nerfbaselines-grocery/nb-info.json
+```
+
+inside *every* converted scene folder. The contents of the file will look like
+
+```json
+{
+  "loader": "nerfstudio"
+}
+```
+
+and you can have an alternative loader of "colmap" if that's what you're using. (I have not had any luck with that loader and do not recommend).
+
+#### Other
+
 Changes to /cluster/medbow/project/3dllms/melgin/conda/envs/conda-envs/gaussian-opacity-fields/
 492c89517b613ce96a3fbe243d6698317e9f38e0a219ac38d72949ecf48780f7/
 gaussian-opacity-fields/src/gaussian-opacity-fields/scene/gaussian_model.py:
