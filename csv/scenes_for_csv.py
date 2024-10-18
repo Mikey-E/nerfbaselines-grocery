@@ -8,6 +8,12 @@ import csv
 
 model = sys.argv[1]
 
+#@@@
+#Creating filter for the best scenes
+with open('best_scenes.txt', 'r') as file:
+    lines = file.readlines()
+best_scenes = [line.strip() for line in lines]
+
 pattern = r"^results-.*\.json$"
 
 data_for_csv = []
@@ -30,6 +36,11 @@ prefixes = {
 }
 
 for folder in os.listdir(data_folders_path):
+
+    #@@@ skipping unless in best scenes
+    if folder not in best_scenes:
+        continue
+
     try:
         #nerfacto special-case for where it (finally) writes results
         if model == "nerfacto":
@@ -61,7 +72,7 @@ for folder in os.listdir(data_folders_path):
         print(e)
     print(os.getcwd())
 
-with open(output_path + model + ".csv", mode='w', newline='') as f:
+with open(output_path + model + "_best.csv", mode='w', newline='') as f:
     writer = csv.DictWriter(f, fieldnames=["folder", "psnr", "ssim", "lpips"])
     writer.writeheader()
     for row in data_for_csv:
