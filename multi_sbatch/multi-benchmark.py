@@ -21,7 +21,7 @@ parser.add_argument(
     "--data_path",
     default =
         os.getenv("GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH")
-        if model in ["gaussian-opacity-fields", "gaussian-splatting", "mip-splatting"] else
+        if model in ["gaussian-opacity-fields", "gaussian-splatting", "mip-splatting", "scaffold-gs"] else
         os.getenv("GROCERY_DATA_NORMAL_UNGROUPED_DIR_PATH"),
     help="Data directory: where the properly formatted scene folders are",
 )
