@@ -28,7 +28,13 @@
 #nerfbaselines train --method mip-splatting --data ${CURR_DATA_DIR_PATH}${CURR_SCENE} --output ${GROCERY_RESULTS_DIR_PATH}poc_ms_${CURR_SCENE}_8
 
 #Setup for scaffold-gs model
-export CURR_SCENE="04_19_2024_W_F_Sugar_P_2/"
-export CURR_DATA_DIR_PATH=$GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH
+#export CURR_SCENE="04_19_2024_W_F_Sugar_P_2/"
+#export CURR_DATA_DIR_PATH=$GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH
 #export CURR_DATA_DIR_PATH=$GROCERY_DATA_NORMAL_UNGROUPED_DIR_PATH
-nerfbaselines train --method scaffold-gs --data ${CURR_DATA_DIR_PATH}${CURR_SCENE} --output ${GROCERY_RESULTS_DIR_PATH}poc_sgs_${CURR_SCENE}
+#nerfbaselines train --method scaffold-gs --data ${CURR_DATA_DIR_PATH}${CURR_SCENE} --output ${GROCERY_RESULTS_DIR_PATH}poc_sgs_${CURR_SCENE}
+
+#Setup for nerfacto model
+export CURR_SCENE="04_19_2024_W_F_Sugar_P_2/"
+#export CURR_DATA_DIR_PATH=$GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH
+export CURR_DATA_DIR_PATH=$GROCERY_DATA_NORMAL_UNGROUPED_DIR_PATH
+nerfbaselines train --method nerfacto --data ${CURR_DATA_DIR_PATH}${CURR_SCENE} --output ${GROCERY_RESULTS_DIR_PATH}poc_nerfacto_${CURR_SCENE}
