@@ -33,23 +33,13 @@ parser.add_argument(
     default=os.getenv("GROCERY_RESULTS_DIR_PATH") + model + "/",
     help="Results directory: where to put the results folders for each scene",
 )
-parser.add_argument(
-    "--logs_path",
-    default=os.getenv("GROCERY_LOGS_DIR_PATH") + model + "/",
-    help="Logs directory: where to put the log folders for each scene",
-)
 args = parser.parse_args(sys.argv[2:])#Requires model as first argument before options
-
-#Ask whether logs should be cleared
-if (os.path.isdir(args.logs_path) and len(os.listdir(args.logs_path)) != 0):#if logs are already there
-    print(f"#WARNING: logs already present at {args.logs_path}")
 
 #Confirm settings are as user wants
 print("#------- Settings for this run --------")
 print("#model: " + model)
 print("#data path: " + args.data_path)
 print("#results path: " + args.results_path)
-print("#logs path: " + args.logs_path)
 print("#--------------------------------------")
 
 if args.triage:
