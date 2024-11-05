@@ -60,5 +60,6 @@ for scene_folder in os.listdir(args.data_path):
                 continue
         except FileNotFoundError:
             pass #ie this one needs to run, go forth and make the command
-    command = f"nerfbaselines train --method {model} --data {args.data_path} --output {args.results_path}"
+    command = \
+        f"nerfbaselines train --method {model} --data {args.data_path}{scene_folder} --output {args.results_path}{scene_folder}"
     print(command)
