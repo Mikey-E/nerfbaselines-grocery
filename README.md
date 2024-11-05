@@ -55,7 +55,8 @@ to point to wherever you will keep the nerfbaselines datasets.
 - Create a results directory for keeping info about training runs.
 - With that being done, you'll be able to stay organized with training run commands in similar form to:
 nerfbaselines train --method instant-ngp --data datasets/mipnerf360/kitchen --output results/ingp_kitchen
-- Set env variable NERFBASELINES_PREFIX to wherever you want new environments to be made.
+- Set env variable NERFBASELINES_PREFIX to wherever you want new environments to be made. This is important because
+nerfbaselines will be automatically creating new conda envs for each model.
 
 Environment variables to set (with example values that you may change as needed) are stored in `env_vars.sh`.
 It is critical that you make sure these get activated when the conda environment gets activated,
