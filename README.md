@@ -111,8 +111,14 @@ Changes to cameras.py
 	singular matrix error:
 		try with the pseudo inverse instead: np.linalg.pinv(matrix)
 
+Had to add a \_version.py file inside nerfbaselines folder, containing __version__="x.y.z"
+i.e. whatever the current version of nerfbaselines was pip-installed.
+This file has been gitignored by the original author(s). Example contents to replicate:
 
-Had to add a \_version.py file inside nerfbaselines folder, containing __version__="x.y.z" i.e. whatever the current version of nerfbaselines was pip-installed. This file has been gitignored by the original author(s).
+```
+version = "1.2.5"
+__version__ = version
+```
 
 ____ END fork preamble ____
 
