@@ -1,22 +1,44 @@
 #Author: Michael Elgin
+#File to make a simple csv file of the counts of images per scene
 
 import os
+import argparse
 
-#Where are the images to count
-GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH = os.getenv("GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH")
-GROCERY_CSVS_DIR_PATH = os.getenv("GROCERY_CSVS_DIR_PATH")
+#Set up argparse to handle directory paths as arguments
+parser = argparse.ArgumentParser(description="Count images in scenes and write to CSV")
+parser.add_argument(
+    "--data_dir_path",
+    type=str,
+    required=True,
+    help="Path to the directory containing all scene folders (ungrouped).",
+)
+parser.add_argument(
+    "--csv_dir_path",
+    type=str,
+    help="Path to the directory where the output CSV should be saved.",
+    default=os.getenv("GROCERY_CSVS_DIR_PATH"),
+)
+parser.add_argument(
+    "--output_filename",
+    type=str,
+    help="Name of the output CSV file.",
+    default="scene_image_count.csv",
+)
+args = parser.parse_args()
 
-#Confirm these are set
-assert(GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH != None)
-assert(GROCERY_CSVS_DIR_PATH != None)
+#Confirm these are set correctly
+assert(args.data_dir_path != None)
+assert(args.csv_dir_path != None)
+if args.output_filename[-4:] != ".csv":
+    args.output_filename += ".csv"
+args.data_dir_path = args.data_dir_path.rstrip("/") + "/"
+args.csv_dir_path = args.csv_dir_path.rstrip("/") + "/"
 
-OUTPUT_FILENAME = "scene_image_count.csv"
-
-with open(GROCERY_CSVS_DIR_PATH + OUTPUT_FILENAME, "w") as f:
+with open(args.csv_dir_path + args.output_filename, "w") as f:
     f.write("scene_folder_name, images_count\n")
-    for scene_folder in os.listdir(GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH):
+    for scene_folder in os.listdir(args.data_dir_path):
         f.write(scene_folder + ","\
-        + str(len(os.listdir(GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH + "/" + scene_folder + "/images"))) + "\n")
+        + str(len(os.listdir(args.data_dir_path + scene_folder + "/images"))) + "\n")
 
-print("Read scenes from " + GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH)
-print("Created output file: " + GROCERY_CSVS_DIR_PATH + OUTPUT_FILENAME)
+print("Read scenes from " + args.data_dir_path)
+print("Created output file: " + args.csv_dir_path + args.output_filename)
