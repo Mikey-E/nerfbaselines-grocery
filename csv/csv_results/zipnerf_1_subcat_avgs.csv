@@ -1,4 +1,4 @@
-subcategory,folder_count,psnr,ssim,lpips
+subcategory,folder_count_subcat,psnr,ssim,lpips
 Apples,42,12.625,0.353,0.702
 Avacados,6,11.726,0.260,0.708
 Bananas,15,11.801,0.343,0.718

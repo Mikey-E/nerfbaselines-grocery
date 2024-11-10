@@ -6,6 +6,7 @@ import re
 import json
 import csv
 import argparse
+from pathlib import Path
 
 parser = argparse.ArgumentParser(description="Create a csv file of scene names and their metrics from training.")
 parser.add_argument(
@@ -105,16 +106,21 @@ with open(args.csv_dir_path + results_name + ".csv", mode='w', newline='') as f:
     for row in data_for_csv:
         writer.writerow(row)
 
-#Subcategories
-data_for_csv = []
+#Subcategories and categories
+subcat_for_csv = []
+cat_for_csv = []
 for category in os.listdir(args.training_scene_folders_dir_path_grouped):
     if category == "Random":#is effectively a sub-category
         continue #until we decide what we want to do with this - right now it's not even part of the paper
+    psnr_sum_cat = 0
+    ssim_sum_cat = 0
+    lpips_sum_cat = 0
+    folder_count_cat = 0
     for subcategory in os.listdir(args.training_scene_folders_dir_path_grouped + category):
-        psnr_sum = 0
-        ssim_sum = 0
-        lpips_sum = 0
-        folder_count = 0
+        psnr_sum_subcat = 0
+        ssim_sum_subcat = 0
+        lpips_sum_subcat = 0
+        folder_count_subcat = 0
         for folder in os.listdir(args.training_scene_folders_dir_path_grouped + category + '/' + subcategory):
             try:
                 #nerfacto special-case for where it (finally) writes results
@@ -129,30 +135,55 @@ for category in os.listdir(args.training_scene_folders_dir_path_grouped):
                         with open(path + '/' + item, 'r') as f:
                             data = json.load(f)
                             found = True
-                        psnr_sum += data["metrics"]["psnr"]
-                        ssim_sum += data["metrics"]["ssim"]
-                        lpips_sum += data["metrics"]["lpips"]
-                        folder_count += 1
+                        psnr = data["metrics"]["psnr"]
+                        ssim = data["metrics"]["ssim"]
+                        lpips = data["metrics"]["lpips"]
+                        psnr_sum_subcat += psnr
+                        ssim_sum_subcat += ssim
+                        lpips_sum_subcat += lpips
+                        folder_count_subcat += 1
+                        psnr_sum_cat += psnr
+                        ssim_sum_cat += ssim
+                        lpips_sum_cat += lpips
+                        folder_count_cat += 1
                         break #No need to iterate further
                 if not found:
 #                    raise Exception(os.getcwd() + " RESULTS EXPECTED BUT NOT FOUND")
                     print("Did not find data for " + folder + ", skipping")
             except FileNotFoundError as e:
                 print(e)
-        data_for_csv.append({
+        subcat_for_csv.append({
             "subcategory": subcategory,
-            "folder_count": folder_count,
-            "psnr":   psnr_sum / folder_count,
-            "ssim":   ssim_sum / folder_count,
-            "lpips":  lpips_sum / folder_count,
+            "folder_count_subcat": folder_count_subcat,
+            "psnr":   psnr_sum_subcat / folder_count_subcat,
+            "ssim":   ssim_sum_subcat / folder_count_subcat,
+            "lpips":  lpips_sum_subcat / folder_count_subcat,
         })
+    cat_for_csv.append({
+        "category": category,
+        "folder_count_cat": folder_count_cat,
+        "psnr":   psnr_sum_cat / folder_count_cat,
+        "ssim":   ssim_sum_cat / folder_count_cat,
+        "lpips":  lpips_sum_cat / folder_count_cat,
+    })
 
 #Write subcategories results file
 with open(args.csv_dir_path + results_name + "_subcat_avgs.csv", mode='w', newline='') as f:
-    writer = csv.DictWriter(f, fieldnames=["subcategory", "folder_count", "psnr", "ssim", "lpips"])
+    writer = csv.DictWriter(f, fieldnames=["subcategory", "folder_count_subcat", "psnr", "ssim", "lpips"])
     writer.writeheader()
-    for row in data_for_csv:
-        row["folder_count"] = f"{row['folder_count']}"#Should stay int
+    for row in subcat_for_csv:
+        row["folder_count_subcat"] = f"{row['folder_count_subcat']}"#Should stay int
+        row["psnr"] = f"{row['psnr']:.3f}"#change to 3 decimal places for easy copy-paste
+        row["ssim"] = f"{row['ssim']:.3f}"#change to 3 decimal places for easy copy-paste
+        row["lpips"] = f"{row['lpips']:.3f}"#change to 3 decimal places for easy copy-paste
+        writer.writerow(row)
+
+#Write categories results file
+with open(args.csv_dir_path + results_name + "_cat_avgs.csv", mode='w', newline='') as f:
+    writer = csv.DictWriter(f, fieldnames=["category", "folder_count_cat", "psnr", "ssim", "lpips"])
+    writer.writeheader()
+    for row in cat_for_csv:
+        row["folder_count_cat"] = f"{row['folder_count_cat']}"#Should stay int
         row["psnr"] = f"{row['psnr']:.3f}"#change to 3 decimal places for easy copy-paste
         row["ssim"] = f"{row['ssim']:.3f}"#change to 3 decimal places for easy copy-paste
         row["lpips"] = f"{row['lpips']:.3f}"#change to 3 decimal places for easy copy-paste
