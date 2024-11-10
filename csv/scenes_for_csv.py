@@ -74,7 +74,6 @@ for folder in os.listdir(args.training_scene_folders_dir_path_ungrouped):
             path = args.results_scene_folders_dir_path + folder + "/results/nerfacto_" + folder
         else:
             path = args.results_scene_folders_dir_path + folder
-        print(f"path: {path}")#Show what folder on
         found = False
         for item in os.listdir(path):
             if bool(re.match(pattern, item)):
@@ -100,11 +99,13 @@ for folder in os.listdir(args.training_scene_folders_dir_path_ungrouped):
         print(e)
 
 #Write flat results file
-with open(args.csv_dir_path + results_name + ".csv", mode='w', newline='') as f:
+flat_file = args.csv_dir_path + results_name + ".csv"
+with open(flat_file, mode='w', newline='') as f:
     writer = csv.DictWriter(f, fieldnames=["folder", "psnr", "ssim", "lpips"])
     writer.writeheader()
     for row in data_for_csv:
         writer.writerow(row)
+    print(f"Created: {flat_file}")
 
 #Subcategories and categories
 subcat_for_csv = []
@@ -128,7 +129,6 @@ for category in os.listdir(args.training_scene_folders_dir_path_grouped):
                     path = args.results_scene_folders_dir_path + folder + "/results/nerfacto_" + folder
                 else:
                     path = args.results_scene_folders_dir_path + folder
-                print(f"subcategory path: {path}")#Show what folder on
                 found = False
                 for item in os.listdir(path):
                     if bool(re.match(pattern, item)):
@@ -168,7 +168,8 @@ for category in os.listdir(args.training_scene_folders_dir_path_grouped):
     })
 
 #Write subcategories results file
-with open(args.csv_dir_path + results_name + "_subcat_avgs.csv", mode='w', newline='') as f:
+subcat_file = args.csv_dir_path + results_name + "_subcat_avgs.csv"
+with open(subcat_file, mode='w', newline='') as f:
     writer = csv.DictWriter(f, fieldnames=["subcategory", "folder_count_subcat", "psnr", "ssim", "lpips"])
     writer.writeheader()
     for row in subcat_for_csv:
@@ -177,9 +178,11 @@ with open(args.csv_dir_path + results_name + "_subcat_avgs.csv", mode='w', newli
         row["ssim"] = f"{row['ssim']:.3f}"#change to 3 decimal places for easy copy-paste
         row["lpips"] = f"{row['lpips']:.3f}"#change to 3 decimal places for easy copy-paste
         writer.writerow(row)
+    print(f"Created: {subcat_file}")
 
 #Write categories results file
-with open(args.csv_dir_path + results_name + "_cat_avgs.csv", mode='w', newline='') as f:
+cat_file = args.csv_dir_path + results_name + "_cat_avgs.csv"
+with open(cat_file, mode='w', newline='') as f:
     writer = csv.DictWriter(f, fieldnames=["category", "folder_count_cat", "psnr", "ssim", "lpips"])
     writer.writeheader()
     for row in cat_for_csv:
@@ -188,3 +191,4 @@ with open(args.csv_dir_path + results_name + "_cat_avgs.csv", mode='w', newline=
         row["ssim"] = f"{row['ssim']:.3f}"#change to 3 decimal places for easy copy-paste
         row["lpips"] = f"{row['lpips']:.3f}"#change to 3 decimal places for easy copy-paste
         writer.writerow(row)
+    print(f"Created: {cat_file}")
