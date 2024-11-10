@@ -37,18 +37,16 @@ assert args.percent >= 0 and args.percent <= 100
 for scene_folder in os.listdir(args.path):
 	images_in_scene = os.listdir(args.path + scene_folder + "/images")
 	total_images_in_scene = len(images_in_scene)
-#	threshold = (args.percent/100) * total_images_in_scene
-#	images_to_remove = [image for image in images_in_scene if int(image.split(".")[0]) > threshold]
-#	for images_folder in ["images", "images_2", "images_4", "images_8"]:
-#		for image in images_to_remove:
-#			os.system("rm " + args.path + scene_folder + "/" + images_folder + "/" + image)
+	threshold = (args.percent/100) * total_images_in_scene
+	images_to_remove = [image for image in images_in_scene if int(image.split(".")[0]) > threshold]
+	for images_folder in ["images", "images_2", "images_4", "images_8"]:
+		for image in images_to_remove:
+			os.system("rm " + args.path + scene_folder + "/" + images_folder + "/" + image)
 
 	#Now update the transforms.json - leaving unmatched frames will cause errors,
 	#that means having a transform for an image that no longer exists will cause errors.
 	with open(args.path + scene_folder + "/transforms.json", 'r') as file:
 		data=json.load(file)
-
-	threshold=total_images_in_scene#@@@
 
 	#Filter frames based on the image number in the file path
 	filtered_frames=[
