@@ -1,8 +1,14 @@
 #Author: Michael Elgin
 #This file is to create the modified datasets containing 90%, 50%, and 10% of the data for ablation studies.
 #This file will probably only need to be run once.
+
 #A converted version for gaussian models should be created from a dataset that has ALREADY had its images reduced.
-#DO NOT simply reduce data on a converted version because then there is a mismatch between the data and the conversion output(s)
+#DO NOT simply reduce data on a converted version because then there is a mismatch between the data and the conversion output(s).
+
+#After the filtered_transforms.json files have been created, they will need to become transforms.json,
+#so "mv filtered_transforms.json transforms.json", perhaps making a backup of the old transforms first as
+#"mv transforms.json transforms.bak" if you want.
+#Remember scene_folder_command can do this for all scene folders at once.
 
 import argparse
 import os
