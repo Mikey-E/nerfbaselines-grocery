@@ -3,7 +3,7 @@
 #SBATCH --account=3dllms
 #SBATCH --time=24:00:00 # max runtime
 #SBATCH --nodes=1
-#SBATCH --partition=non-investor
+#SBATCH --partition=mb-l40s
 #SBATCH --gres=gpu:1
 
 #convert.py can have OOM errors, so have an sbatch directive for minimum memory
@@ -22,4 +22,4 @@ conda init
 conda activate convert_scenes
 
 #@@@ probably don't want to use a relative path ../utils/convert.py, may lead to bugs
-srun -o ../logs/convert_$1.log time python ../utils/convert.py --source_path $1
+srun -o ../logs/convert/convert_$1.log time python ../utils/convert.py --source_path $1

@@ -20,17 +20,8 @@ parser.add_argument(
     )
 args = parser.parse_args()
 
-for category in os.listdir(args.scene_path):
-    if category == "Random":#is effectively a sub-category
-        for scene_folder in os.listdir(args.scene_path + "/Random"):
-            path = args.scene_path + "/Random/" + scene_folder
-            command = "sbatch -J convert_" + scene_folder + " " + args.nerfbaselines_path + "/slurm_scripts/convert.sh " + path
-            print(command)
-            os.system(command)
-        continue
-    for subcategory in os.listdir(args.scene_path + "/" + category):
-        for scene_folder in os.listdir(args.scene_path + "/" + category + "/" + subcategory):
-            path = args.scene_path + "/" + category + "/" + subcategory + "/" + scene_folder
-            command = "sbatch -J convert_" + scene_folder + " " + args.nerfbaselines_path + "/slurm_scripts/convert.sh " + path
-            print(command)
-            os.system(command)
+for scene_folder in os.listdir(args.scene_path):
+    path = args.scene_path.rstrip("/") + "/" + scene_folder
+    command = "sbatch -J convert_" + scene_folder + " " + args.nerfbaselines_path + "/slurm_scripts/convert.sh " + path
+    print(command)
+    os.system(command)
