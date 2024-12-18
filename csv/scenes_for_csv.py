@@ -89,6 +89,7 @@ for folder in os.listdir(args.training_scene_folders_dir_path_ungrouped):
                 break #No need to iterate further
         if not found:
 #            raise Exception(os.getcwd() + " RESULTS EXPECTED BUT NOT FOUND")
+            print("Ungrouped: Did not find results for " + folder + ", skipping")
             data_for_csv.append({
                 "folder": folder,
                 "psnr":   "null",
@@ -149,7 +150,7 @@ for category in os.listdir(args.training_scene_folders_dir_path_grouped):
                         break #No need to iterate further
                 if not found:
 #                    raise Exception(os.getcwd() + " RESULTS EXPECTED BUT NOT FOUND")
-                    print("Did not find data for " + folder + ", skipping")
+                    print("Grouped: Did not find results for " + folder + ", skipping")
             except FileNotFoundError as e:
                 print(e)
         subcat_for_csv.append({
