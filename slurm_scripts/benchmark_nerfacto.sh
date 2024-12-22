@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --account=3dllms
-#SBATCH --time=6-23:59:59 #max runtime
+#SBATCH --time=06:00:00 #max runtime
 
 #Job names preferably are specified to sbatch with -J
 ##SBATCH --job-name=sbatch_test
