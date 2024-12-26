@@ -156,16 +156,16 @@ for category in os.listdir(args.training_scene_folders_dir_path_grouped):
         subcat_for_csv.append({
             "subcategory": subcategory,
             "folder_count_subcat": folder_count_subcat,
-            "psnr":   psnr_sum_subcat / folder_count_subcat,
-            "ssim":   ssim_sum_subcat / folder_count_subcat,
-            "lpips":  lpips_sum_subcat / folder_count_subcat,
+            "psnr":   (psnr_sum_subcat / folder_count_subcat) if folder_count_subcat != 0 else "null",
+            "ssim":   (ssim_sum_subcat / folder_count_subcat) if folder_count_subcat != 0 else "null",
+            "lpips":  (lpips_sum_subcat / folder_count_subcat) if folder_count_subcat != 0 else "null",
         })
     cat_for_csv.append({
         "category": category,
         "folder_count_cat": folder_count_cat,
-        "psnr":   psnr_sum_cat / folder_count_cat,
-        "ssim":   ssim_sum_cat / folder_count_cat,
-        "lpips":  lpips_sum_cat / folder_count_cat,
+        "psnr":   (psnr_sum_cat / folder_count_cat) if folder_count_cat != 0 else "null",
+        "ssim":   (ssim_sum_cat / folder_count_cat) if folder_count_cat != 0 else "null",
+        "lpips":  (lpips_sum_cat / folder_count_cat) if folder_count_cat != 0 else "null",
     })
 
 #Write subcategories results file
@@ -175,9 +175,9 @@ with open(subcat_file, mode='w', newline='') as f:
     writer.writeheader()
     for row in subcat_for_csv:
         row["folder_count_subcat"] = f"{row['folder_count_subcat']}"#Should stay int
-        row["psnr"] = f"{row['psnr']:.3f}"#change to 3 decimal places for easy copy-paste
-        row["ssim"] = f"{row['ssim']:.3f}"#change to 3 decimal places for easy copy-paste
-        row["lpips"] = f"{row['lpips']:.3f}"#change to 3 decimal places for easy copy-paste
+        row["psnr"] = (f"{row['psnr']:.3f}") if row['psnr'] != "null" else "null"
+        row["ssim"] = (f"{row['ssim']:.3f}") if row['ssim'] != "null" else "null"
+        row["lpips"] = (f"{row['lpips']:.3f}") if row['lpips'] != "null" else "null"
         writer.writerow(row)
     print(f"Created: {subcat_file}")
 
@@ -188,8 +188,8 @@ with open(cat_file, mode='w', newline='') as f:
     writer.writeheader()
     for row in cat_for_csv:
         row["folder_count_cat"] = f"{row['folder_count_cat']}"#Should stay int
-        row["psnr"] = f"{row['psnr']:.3f}"#change to 3 decimal places for easy copy-paste
-        row["ssim"] = f"{row['ssim']:.3f}"#change to 3 decimal places for easy copy-paste
-        row["lpips"] = f"{row['lpips']:.3f}"#change to 3 decimal places for easy copy-paste
+        row["psnr"] = (f"{row['psnr']:.3f}") if row['psnr'] != "null" else "null"
+        row["ssim"] = (f"{row['ssim']:.3f}") if row['ssim'] != "null" else "null"
+        row["lpips"] = (f"{row['lpips']:.3f}") if row['lpips'] != "null" else "null"
         writer.writerow(row)
     print(f"Created: {cat_file}")
