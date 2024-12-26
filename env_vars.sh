@@ -10,16 +10,16 @@ export NERFBASELINES_PREFIX=/project/3dllms/melgin/conda/envs/
 export NERFBASELINES_HOME_DIR_PATH=/project/3dllms/melgin/nerfbaselines-grocery/
 
 #Location of data for models that require converted data according to convert.py, flat (ungrouped)
-export GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH=/project/3dllms/DATASETS/CONVERTED/CONVERTED/UNGROUPED/
+export GROCERY_DATA_CONVERTED_UNGROUPED_DIR_PATH=/project/3dllms/DATASETS/CONVERTED/converted/100percent/ungrouped/
 
 #Location of data for models that require converted data according to convert.py, hierarchical grouped
-export GROCERY_DATA_CONVERTED_GROUPED_DIR_PATH=/project/3dllms/DATASETS/CONVERTED/CONVERTED/GROUPED/
+export GROCERY_DATA_CONVERTED_GROUPED_DIR_PATH=/project/3dllms/DATASETS/CONVERTED/converted/100percent/grouped/
 
 #Location of data for models that work with our normal format, flat (ungrouped)
-export GROCERY_DATA_NORMAL_UNGROUPED_DIR_PATH=/project/3dllms/DATASETS/CONVERTED/NORMAL/UNGROUPED/
+export GROCERY_DATA_NORMAL_UNGROUPED_DIR_PATH=/project/3dllms/DATASETS/CONVERTED/normal/100percent/ungrouped/
 
 #Location of data for models that work with our normal format, hierarchical grouped
-export GROCERY_DATA_NORMAL_GROUPED_DIR_PATH=/project/3dllms/DATASETS/CONVERTED/NORMAL/GROUPED/
+export GROCERY_DATA_NORMAL_GROUPED_DIR_PATH=/project/3dllms/DATASETS/CONVERTED/normal/100percent/grouped/
 
 #Location of where to place results from training runs
 export GROCERY_RESULTS_DIR_PATH=${NERFBASELINES_HOME_DIR_PATH}results/
