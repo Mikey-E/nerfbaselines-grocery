@@ -1,8 +1,9 @@
 #!/bin/bash
 
-#@@@NEEDS TO BE DONE BY actual live shell 1st - unless you investigate and find out why this is necessary and do otherwise
+#May have been using env variables set from ingp e.g.
 #conda activate /project/3dllms/melgin/conda/envs/conda-envs/instant-ngp/7ad00635e316fd20e609aafee828b33c8039fa9952b0a1784e172b350746bb9c/instant-ngp
 #conda deactivate
+#This method's conda environment should get its own
 
 #SBATCH --account=3dllms
 #SBATCH --time=06:00:00 #max runtime
