@@ -1,0 +1,4 @@
+category,folder_count_cat,psnr,ssim,lpips
+Fruits,132,12.597,0.387,0.721
+Packages,267,9.402,0.237,0.842
+Vegetables,89,12.076,0.354,0.739
