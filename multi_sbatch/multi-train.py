@@ -9,6 +9,26 @@ import sys
 import argparse
 from utils.allowed_models import allowed_models
 
+from pathlib import Path
+
+def get_images_symlink_target(base_dir):
+    """
+    Pass the data path and this should return the ablation setting
+    """
+    images_link = Path(base_dir) / "images"
+    if images_link.is_symlink():
+        target = images_link.resolve()
+        # Check which images_X folder it points to
+        for suffix in ["images_1", "images_2", "images_4", "images_8"]:
+            if target.name == suffix:
+                print(f'"images" symlink points to: {suffix}')
+                return suffix
+        print(f'"images" symlink points to: {target} (not a known images_X folder)')
+        return target
+    else:
+        print('"images" is not a symlink.')
+        return None
+
 #Model to benchmark
 model = sys.argv[1]
 assert model in allowed_models, "Must pass a valid model name as first arg"
@@ -40,6 +60,7 @@ print("#------- Settings for this run --------")
 print("#model: " + model)
 print("#data path: " + args.data_path)
 print("#results path: " + args.results_path)
+print("#folder size setting: " + get_images_symlink_target(os.path.join(args.data_path, 04_19_2024_W_F_Dressings_P_2)))#arbitrary folder from ungrouped
 print("#--------------------------------------")
 
 if args.triage:
