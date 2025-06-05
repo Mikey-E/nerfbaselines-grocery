@@ -74,7 +74,7 @@ print("model: " + model)
 print("data path: " + args.data_path)
 print("results path: " + args.results_path)
 print("logs path: " + args.logs_path)
-print("folder size setting: " + get_images_symlink_target(os.path.join(args.data_path, 04_19_2024_W_F_Dressings_P_2)))#arbitrary folder from ungrouped
+print("folder size setting: " + get_images_symlink_target(os.path.join(args.data_path, "04_19_2024_W_F_Dressings_P_2")))#arbitrary folder from ungrouped
 print("--------------------------------------")
 if (input("Continue? y/[n]: ") != 'y'): exit(0)
 
