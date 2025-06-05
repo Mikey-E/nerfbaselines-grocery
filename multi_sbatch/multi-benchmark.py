@@ -65,7 +65,8 @@ args = parser.parse_args(sys.argv[2:])#Requires model as first argument before o
 
 #Ask whether logs should be cleared
 if (os.path.isdir(args.logs_path) and len(os.listdir(args.logs_path)) != 0):#if logs are already there
-    if (input("clear logs? y/[n]: ") == 'y'):
+    print(f"Logs directory '{args.logs_path}' is not empty.")
+    if (input(f"Clear logs in '{args.logs_path}'? y/[n]: ") == 'y'):
         os.system("rm -rf " + args.logs_path)
 
 #Confirm settings are as user wants
