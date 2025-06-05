@@ -84,22 +84,27 @@ if args.triage:
 else:#Warn
     if (input("triage flag not set, this will re-run any previous successful runs. Continue? y/[n]: ") != 'y'): exit(0)
 
-for scene_folder in os.listdir(args.data_path):
-    if args.triage:
-        is_results_found=False
-        try:
-            for item in os.listdir(args.results_path + scene_folder):
-                if bool(re.match(pattern, item)):
-                    is_results_found=True
-                    break
-            if is_results_found:
-                continue
-        except FileNotFoundError:
-            pass #ie this one needs to run, go forth and make the command
-    #Trailing arguments of the command should match what is expected by the benchmarking script
-    command =\
-        "sbatch -J " + model + "_" + scene_folder + " "\
-        + os.getenv("NERFBASELINES_HOME_DIR_PATH") + "slurm_scripts/benchmark_" + model + ".sh "\
-        + scene_folder + " " + args.data_path + " " + args.results_path + " " + args.logs_path
-    os.system("echo command is: " + command)
-    os.system(command)
+# Open the slurm commands file for writing
+slurm_commands_file = "slurm_commands.sh"
+with open(slurm_commands_file, "w") as f:
+    for scene_folder in os.listdir(args.data_path):
+        if args.triage:
+            is_results_found=False
+            try:
+                for item in os.listdir(args.results_path + scene_folder):
+                    if bool(re.match(pattern, item)):
+                        is_results_found=True
+                        break
+                if is_results_found:
+                    continue
+            except FileNotFoundError:
+                pass #ie this one needs to run, go forth and make the command
+        #Trailing arguments of the command should match what is expected by the benchmarking script
+        command =\
+            "sbatch -J " + model + "_" + scene_folder + " "\
+            + os.getenv("NERFBASELINES_HOME_DIR_PATH") + "slurm_scripts/benchmark_" + model + ".sh "\
+            + scene_folder + " " + args.data_path + " " + args.results_path + " " + args.logs_path
+        print("command is: " + command)
+        f.write(command + "\n")
+
+print(f"All slurm commands have been written to {slurm_commands_file}. You can run them with: bash {slurm_commands_file}")
