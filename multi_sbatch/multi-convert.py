@@ -24,4 +24,4 @@ for scene_folder in os.listdir(args.scene_path):
     path = args.scene_path.rstrip("/") + "/" + scene_folder
     command = "sbatch -J convert_" + scene_folder + " " + args.nerfbaselines_path + "/slurm_scripts/convert.sh " + path
     print(command)
-#    os.system(command)
+    os.system(command)
